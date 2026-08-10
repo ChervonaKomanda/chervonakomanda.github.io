@@ -1,6 +1,8 @@
+---
 layout: page
 title: "HOME"
-permalink: /README.md
+permalink: /index.html
+---
 
 <ul>
   {% for post in site.posts %}

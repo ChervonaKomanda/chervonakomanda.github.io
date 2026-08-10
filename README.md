@@ -1,5 +1,4 @@
 ---
-layout: index
 title: "HOME"
 permalink: /index.html
 ---

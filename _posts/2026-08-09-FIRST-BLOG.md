@@ -1,9 +1,8 @@
 ---
 layout: post
 title:  "The first post ever"
+author: "Chervona"
 ---
-
-# Welcome
 
 **Hello world**, this is my first blog post.
 

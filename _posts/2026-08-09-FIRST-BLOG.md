@@ -2,15 +2,17 @@
 layout: post
 title:  "The first post ever"
 author: "Chervona"
+tags: "lol, no way, wow", "wow2"
 ---
 
-**Hello world**, this is my first blog post.
+# **Hello world**, this is my first blog post.
 
 ---
 excerpt_separator: <!--more-->
 ---
 
-I hope you like it!
+I hope you like it! Wow this is so wild.
+Omg no way.
 
 {% for tag in site.tags %}
   <h3>{{ tag[0] }}</h3>

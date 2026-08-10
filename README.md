@@ -1,8 +1,4 @@
-<html>
-<head>
-</head>
 
-<body>
 <ul>
   {% for post in site.posts %}
     <li>
@@ -11,5 +7,3 @@
   {% endfor %}
 </ul>
   
-</body>
-</html>

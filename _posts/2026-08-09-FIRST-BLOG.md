@@ -2,7 +2,7 @@
 layout: post
 title:  "The first post ever"
 author: "Chervona"
-tags: "lolwow", "wow2"
+tags: [wow, omg, jekyll]
 ---
 
 # **Hello world**, this is my first blog post.

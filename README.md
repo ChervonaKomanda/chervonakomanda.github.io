@@ -1,3 +1,7 @@
+layout: page
+title: "HOME"
+permalink: /README.md
+
 <ul>
   {% for post in site.posts %}
     <li>

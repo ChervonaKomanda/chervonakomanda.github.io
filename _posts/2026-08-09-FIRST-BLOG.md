@@ -1,11 +1,15 @@
 ---
 layout: post
-title:  "Welcome to Jekyll!"
+title:  "The first post ever"
 ---
 
 # Welcome
 
-**Hello world**, this is my first Jekyll blog post.
+**Hello world**, this is my first blog post.
+
+---
+excerpt_separator: <!--more-->
+---
 
 I hope you like it!
 

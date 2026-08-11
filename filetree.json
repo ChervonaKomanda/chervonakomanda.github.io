@@ -1,0 +1,19 @@
+---
+layout: null
+---
+[
+  {% assign files = site.html_pages | concat: site.posts %}
+  {% assign first_item = true %}
+  {% for file in files %}
+    {% if file.path contains 'archives/' %}
+      {% unless first_item %},{% endunless %}
+      {
+        "title": {{ file.title | jsonify }},
+        "url": {{ file.url | jsonify }},
+        "path": {{ file.path | jsonify }},
+        "date": {{ file.date | default: '1970-01-01' | date: "%Y-%m-%dT%H:%M:%SZ" | jsonify }}
+      }
+      {% assign first_item = false %}
+    {% endif %}
+  {% endfor %}
+]

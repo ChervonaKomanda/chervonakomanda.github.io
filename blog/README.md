@@ -1,6 +1,6 @@
 ---
 title: "HOME"
-permalink: /index.html
+permalink: /blog/index.html
 ---
 
 <ul>

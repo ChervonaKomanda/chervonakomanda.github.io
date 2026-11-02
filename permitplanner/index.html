@@ -309,12 +309,6 @@
         <label for="planet-id">Planet id</label>
         <input id="planet-id" name="planet" type="text" spellcheck="false" autocomplete="off" placeholder="JS-299a">
         <p class="hint">Filled from a loaded plan. Clear the field to leave the core out.</p>
-        <label for="hq-zone">HQ in the matching zone</label>
-        <select id="hq-zone" name="hq-zone">
-          <option value="no" selected>No</option>
-          <option value="yes">Yes</option>
-        </select>
-        <p class="hint">Yes when your company HQ is in the same zone as this planet’s COGC.</p>
         <p id="cogc-note" class="hint">Load a plan to see that planet’s COGC.</p>
       </fieldset>
 
@@ -352,18 +346,6 @@
         <label for="hq-level">HQ level</label>
         <input id="hq-level" name="hq" type="number" min="0" step="1" value="0" inputmode="numeric">
         <p class="hint">0 leaves the permit out.</p>
-        <div class="pair">
-          <div>
-            <label for="experts-start">Experts at week 1</label>
-            <input id="experts-start" name="experts-start" type="number" min="0" max="6" step="1" value="0" inputmode="numeric" required>
-            <p class="hint">0 uses the recipe rate.</p>
-          </div>
-          <div>
-            <label for="experts-end">Experts at the end</label>
-            <input id="experts-end" name="experts-end" type="number" min="0" max="6" step="1" value="5" inputmode="numeric" required>
-            <p class="hint" id="experts-end-hint">The last week uses this total.</p>
-          </div>
-        </div>
       </fieldset>
 
       <details>

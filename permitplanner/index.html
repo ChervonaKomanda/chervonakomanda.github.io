@@ -282,6 +282,7 @@
         <legend>Plan</legend>
         <label for="plan-link">PRUNplanner share link or plan id</label>
         <input id="plan-link" name="plan" type="text" spellcheck="false" autocomplete="off" placeholder="https://prunplanner.org/shared/…">
+        <p class="hint">Set the plan's expert counts to the mature bonus you want. Week 1 starts at 0 experts. Later weeks add the handbook bonus only after that unlock day, capped at the count saved on the plan. A plan saved at 0 stays at 0.</p>
         <p class="hint">Leave this blank to type the buildings yourself. A link fills the buildings, the planet, and each recipe's order count.</p>
         <div class="actions">
           <button type="button" id="load-plan" class="secondary">Load plan</button>
@@ -323,7 +324,7 @@
           <option value="NC1">NC1</option>
           <option value="NC2">NC2</option>
         </select>
-        <p class="hint">Last trades use this exchange, in its own currency. A ticker with no last trade uses Universe · VWAP 30D. If both are missing, another central exchange last trade is used, then a bid/ask midpoint.</p>
+        <p class="hint">Last trades and VWAP 30D use this exchange, in its own currency. A ticker with no price on the selected exchange keeps its fallback price and that price’s currency.</p>
       </fieldset>
 
       <fieldset>

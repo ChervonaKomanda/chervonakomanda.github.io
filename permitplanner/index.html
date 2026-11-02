@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#030707">
+  <meta name="description" content="Counts what a subsidy base owes over the weeks you choose, using a PRUNplanner plan and public FIO prices.">
+  <meta name="robots" content="index, follow">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://rest.fnar.net https://api.prunplanner.org; img-src 'self'; base-uri 'self'; form-action 'none'; object-src 'none'">
+  <title>PermitPlanner</title>
+  <link rel="icon" href="favicon.ico" type="image/x-icon">
+  <link rel="canonical" href="https://chervonakomanda.github.io/permitplanner/">
+  <meta property="og:title" content="PermitPlanner">
+  <meta property="og:description" content="Counts what a subsidy base owes over the weeks you choose, using a PRUNplanner plan and public FIO prices.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://chervonakomanda.github.io/permitplanner/">
+  <meta property="og:image" content="https://chervonakomanda.github.io/permitplanner/permitplanner-logo.png">
+  <meta property="og:image:width" content="1000">
+  <meta property="og:image:height" content="250">
+  <meta property="og:image:type" content="image/png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="PermitPlanner">
+  <meta name="twitter:description" content="Counts what a subsidy base owes over the weeks you choose, using a PRUNplanner plan and public FIO prices.">
+  <meta name="twitter:image" content="https://chervonakomanda.github.io/permitplanner/permitplanner-logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      --app-bg: #030707;
+      --surface: #151515;
+      --surface-sunken: #000000;
+      --ink: rgb(255 255 255 / 0.8);
+      --ink-strong: rgb(255 255 255 / 0.9);
+      --muted: rgb(255 255 255 / 0.55);
+      --line: #2d2d30;
+      --line-strong: rgb(255 255 255 / 0.15);
+      --accent: #c0e219;
+      --accent-ink: #141c0c;
+      --link: #6ea8fe;
+      --focus: #60a5fa;
+      --positive: #c0e218;
+      --negative: #ff5c7a;
+      --warning: #fbbf24;
+      --hover: rgb(255 255 255 / 0.08);
+      --field: rgb(255 255 255 / 0.05);
+      --radius-control: 4px;
+      --radius-panel: 6px;
+      --secondary: #1f2937;
+      --secondary-hover: #374151;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--ink);
+      background: var(--app-bg);
+    }
+    .app { padding: 1rem 1rem 2.5rem; }
+    .mast {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin: 0 0 0.85rem;
+    }
+    h1 { font-size: 1.5rem; line-height: 1.25; margin: 0; font-weight: 700; color: #fff; }
+    h1.wordmark {
+      font-size: 21px;
+      font-weight: 300;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
+      color: var(--accent);
+    }
+    h1.wordmark span { font-weight: 900; }
+    .discord-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex: none;
+      box-sizing: border-box;
+      height: 22px;
+      padding: 0 0.5rem;
+      border-radius: var(--radius-control);
+      background: #5865F2;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .discord-link svg { width: 14px; height: 14px; display: block; flex: none; }
+    .discord-link:hover { background: #4752C4; color: #fff; text-decoration: none; }
+    .discord-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    @media (min-width: 40rem) {
+      h1.wordmark { font-size: 26px; }
+      .discord-link { height: 26px; padding: 0 0.6rem; font-size: 13px; }
+      .discord-link svg { width: 15px; height: 15px; }
+    }
+    h2 { font-size: 1rem; margin: 1.15rem 0 0.35rem; font-weight: 700; color: #fff; }
+    h3 { font-size: 0.95rem; margin: 0.9rem 0 0.25rem; font-weight: 700; color: var(--ink-strong); }
+    p { margin: 0.35rem 0; }
+    #result-block .varies { font-weight: 700; color: #fff; }
+    #result-block .varies a { font-weight: 700; }
+    a { color: var(--link); }
+    a:hover { text-decoration: underline; }
+    .lede { color: var(--muted); margin-top: 0; }
+    .workspace { display: flex; flex-direction: column; gap: 1rem; }
+    .pane {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-panel);
+      padding: 0.85rem 1rem 1rem;
+    }
+    .plan-pane .lede:first-child { margin-top: 0; }
+    form { margin: 0.85rem 0 0; }
+    .card { background: transparent; border: 0; padding: 0; margin: 0; }
+    .results-pane { container-type: inline-size; }
+    .results-pane:empty::before {
+      content: "Results show up here.";
+      color: var(--muted);
+    }
+    fieldset { border: 0; border-bottom: 1px solid var(--line); padding: 0 0 0.85rem; margin: 0 0 0.9rem; }
+    legend { font-weight: 700; color: #fff; padding: 0; margin-bottom: 0.35rem; }
+    label { display: block; font-weight: 500; color: var(--ink-strong); margin-bottom: 0.25rem; }
+    .hint { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 0.2rem 0 0.55rem; }
+    input, select, textarea, button { font: inherit; }
+    input, select, textarea {
+      width: 100%;
+      padding: 0.3rem 0.5rem;
+      min-height: 1.75rem;
+      border: 1px solid transparent;
+      border-radius: var(--radius-control);
+      background: var(--field);
+      color: var(--ink-strong);
+    }
+    textarea { min-height: 4.5rem; resize: vertical; padding-top: 0.4rem; }
+    input::placeholder, textarea::placeholder { color: rgb(255 255 255 / 0.35); }
+    input:hover, select:hover, textarea:hover { background: var(--hover); }
+    input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+    input:focus-visible, select:focus-visible, textarea:focus-visible { outline-offset: -2px; }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
+    .cols {
+      display: grid;
+      grid-template-columns: minmax(14rem, 1.8fr) 6.5rem auto;
+      gap: 0.4rem;
+      align-items: center;
+      margin-bottom: 0.35rem;
+    }
+    .cols span { font-size: 0.82rem; color: var(--muted); font-weight: 650; }
+    .building-row { margin-bottom: 0.65rem; }
+    .area-line {
+      margin: 0.1rem 0 0.45rem;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.3;
+      color: var(--ink-strong);
+      font-variant-numeric: tabular-nums;
+    }
+    .area-line.over { color: var(--negative); }
+    .building-row .add-order { margin: 0.15rem 0 0.2rem; }
+    .recipe-line {
+      display: grid;
+      grid-template-columns: 6.5rem minmax(0, 1fr);
+      gap: 0.4rem;
+      align-items: center;
+      margin: 0.25rem 0 0.2rem;
+    }
+    button {
+      background: var(--accent);
+      color: var(--accent-ink);
+      border: 0;
+      border-radius: var(--radius-control);
+      padding: 0.3rem 0.7rem;
+      min-height: 1.75rem;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.08); }
+    button.secondary { background: var(--secondary); color: #fff; font-weight: 400; }
+    button.secondary:hover { background: var(--secondary-hover); filter: none; }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    #status { min-height: 1.2rem; color: var(--muted); }
+    .units { font-size: 1.5rem; font-weight: 500; margin: 0.15rem 0; color: #fff; font-variant-numeric: tabular-nums; }
+    .piece { display: flex; justify-content: space-between; gap: 1rem; border-top: 1px solid var(--line); padding: 0.35rem 0; }
+    .piece strong { font-variant-numeric: tabular-nums; color: var(--ink-strong); font-weight: 500; }
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-panel);
+      font-variant-numeric: tabular-nums;
+      margin: 0.35rem 0 0.7rem;
+      overflow: hidden;
+    }
+    th, td { text-align: left; padding: 0.28rem 0.5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { background: var(--surface-sunken); color: var(--ink-strong); font-weight: 700; }
+    td { color: var(--ink); }
+    tbody tr:nth-child(odd) td { background: rgb(255 255 255 / 0.03); }
+    tbody tr:last-child td { border-bottom: 0; }
+    th.num, td.num { text-align: right; white-space: nowrap; }
+    .schedule-wrap {
+      max-height: 32rem;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-panel);
+      margin: 0.4rem 0 0.6rem;
+    }
+    .schedule-wrap table { margin: 0; border: 0; border-radius: 0; width: 100%; }
+    .schedule-wrap th { position: sticky; top: 0; background: var(--surface-sunken); z-index: 1; }
+    td.met, tbody tr td.met { background: var(--positive); color: var(--accent-ink); font-weight: 700; }
+    td.neg { color: var(--negative); }
+    .callout { border-left: 4px solid var(--link); padding: 0.5rem 0.75rem; background: rgb(110 168 254 / 0.1); margin: 0.6rem 0; border-radius: 0 var(--radius-panel) var(--radius-panel) 0; }
+    .callout.warn { border-left-color: var(--warning); background: rgb(251 191 36 / 0.1); }
+    .callout.err { border-left-color: var(--negative); background: rgb(255 92 122 / 0.1); }
+    .callout p { margin: 0.2rem 0; }
+    .books { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; margin: 0.5rem 0 0.7rem; }
+    .book { border: 1px solid var(--line); border-radius: var(--radius-panel); padding: 0.75rem 0.9rem 0.85rem; background: #1e1e1e; }
+    .book h3 { margin: 0 0 0.2rem; font-size: 0.95rem; color: #fff; }
+    .book .kicker { color: var(--muted); font-size: 12px; margin: 0 0 0.45rem; }
+    details { margin: 0.2rem 0 0.8rem; }
+    summary { cursor: pointer; font-weight: 700; color: #fff; }
+    ::-webkit-scrollbar { height: 12px; width: 12px; }
+    ::-webkit-scrollbar-track { background: #1e1e1e; }
+    ::-webkit-scrollbar-corner { background: #1e1e1e; }
+    ::-webkit-scrollbar-thumb { background: #404040; border: 3px solid #1e1e1e; border-radius: 10px; }
+    @media (min-width: 60rem) {
+      html, body { height: 100%; }
+      body { overflow: hidden; }
+      .app {
+        height: 100dvh;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        padding: 0.85rem 1.5rem 1rem;
+      }
+      .workspace {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(24rem, 38rem) minmax(0, 1fr);
+        gap: 1.25rem;
+        align-items: stretch;
+      }
+      .pane { min-height: 0; overflow: auto; }
+    }
+    @container (max-width: 46rem) {
+      .books { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 42rem) {
+      .books { grid-template-columns: 1fr; }
+      .pair { grid-template-columns: 1fr; }
+      .cols { grid-template-columns: minmax(0, 1fr) 6.5rem auto; }
+      .cols.heads { display: none; }
+      .recipe-line { grid-template-columns: 6.5rem minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="mast">
+      <h1 class="wordmark"><span>Permit</span>Planner</h1>
+      <a class="discord-link" href="https://discord.gg/72yyHTsm85" target="_blank" rel="noopener noreferrer">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+        Join our Discord
+      </a>
+    </header>
+    <div class="workspace">
+      <section class="pane plan-pane" aria-label="Plan">
+    <form id="calc-form" method="post" action="#calc-form" autocomplete="off">
+      <fieldset>
+        <legend>Plan</legend>
+        <label for="plan-link">PRUNplanner share link or plan id</label>
+        <input id="plan-link" name="plan" type="text" spellcheck="false" autocomplete="off" placeholder="https://prunplanner.org/shared/…">
+        <p class="hint">Leave this blank to type the buildings yourself. A link fills the buildings, the planet, and each recipe's order count.</p>
+        <div class="actions">
+          <button type="button" id="load-plan" class="secondary">Load plan</button>
+        </div>
+        <p id="status" role="status"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Buildings</legend>
+        <div class="cols heads">
+          <span>Building</span>
+          <span>Buildings</span>
+          <span></span>
+        </div>
+        <div id="building-rows"></div>
+        <p id="area-line" class="area-line">Area 0, limit unknown</p>
+        <div class="actions">
+          <button type="button" id="add-building" class="secondary">Add building</button>
+        </div>
+        <p class="hint">Pick a building and how many. Add order sets the recipe.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Planet</legend>
+        <label for="planet-id">Planet id</label>
+        <input id="planet-id" name="planet" type="text" spellcheck="false" autocomplete="off" placeholder="JS-299a">
+        <p class="hint">Filled from a loaded plan. Clear the field to leave the core out.</p>
+        <label for="hq-zone">HQ in the matching zone</label>
+        <select id="hq-zone" name="hq-zone">
+          <option value="no" selected>No</option>
+          <option value="yes">Yes</option>
+        </select>
+        <p class="hint">Yes when your company HQ is in the same zone as this planet’s COGC.</p>
+        <p id="cogc-note" class="hint">Load a plan to see that planet’s COGC.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Exchange</legend>
+        <label for="exchange">Central exchange</label>
+        <select id="exchange" name="exchange">
+          <option value="AI1">AI1</option>
+          <option value="CI1" selected>CI1</option>
+          <option value="CI2">CI2</option>
+          <option value="IC1">IC1</option>
+          <option value="NC1">NC1</option>
+          <option value="NC2">NC2</option>
+        </select>
+        <p class="hint">Last trades use this exchange, in its own currency. A ticker with no last trade uses Universe · VWAP 30D. If both are missing, another central exchange last trade is used, then a bid/ask midpoint.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>What the base owes</legend>
+        <label for="products">Owed materials</label>
+        <textarea id="products" name="products" spellcheck="false" placeholder="HER 50" required></textarea>
+        <p class="hint">Each line is a material and the percent of that output owed each week. Type shares such as H2O 50, HER 50.</p>
+        <div class="pair">
+          <div>
+            <label for="multiplier">Profit multiplier</label>
+            <input id="multiplier" name="multiplier" type="number" min="0" max="2" step="any" value="1" inputmode="decimal" required>
+            <p class="hint">0 owes no goods. 1 matches the cost. 2 is twice the cost.</p>
+          </div>
+          <div>
+            <label for="weeks">Weeks to run</label>
+            <input id="weeks" name="weeks" type="number" min="1" max="52" step="1" value="4" inputmode="numeric" required>
+            <p class="hint">The table lists this many weeks.</p>
+          </div>
+        </div>
+        <label for="hq-level">HQ level</label>
+        <input id="hq-level" name="hq" type="number" min="0" step="1" value="0" inputmode="numeric">
+        <p class="hint">0 leaves the permit out.</p>
+        <div class="pair">
+          <div>
+            <label for="experts-start">Experts at week 1</label>
+            <input id="experts-start" name="experts-start" type="number" min="0" max="6" step="1" value="0" inputmode="numeric" required>
+            <p class="hint">0 uses the recipe rate.</p>
+          </div>
+          <div>
+            <label for="experts-end">Experts at the end</label>
+            <input id="experts-end" name="experts-end" type="number" min="0" max="6" step="1" value="5" inputmode="numeric" required>
+            <p class="hint" id="experts-end-hint">The last week uses this total.</p>
+          </div>
+        </div>
+      </fieldset>
+
+      <details>
+        <summary>Optional cash and extra materials</summary>
+        <label for="other-cis">Other CIS</label>
+        <input id="other-cis" name="other-cis" type="number" min="0" step="any" inputmode="decimal" placeholder="0">
+        <p class="hint">Shipping, or an establishment fee this base owes.</p>
+        <label for="extras">Extra materials</label>
+        <textarea id="extras" name="extras" spellcheck="false" placeholder="MCG 100"></textarea>
+        <p class="hint">One ticker and amount per line.</p>
+        <label for="buy-anyway">Inputs to buy even if the plan makes them</label>
+        <input id="buy-anyway" name="buy-anyway" type="text" spellcheck="false" autocomplete="off" placeholder="H2O">
+        <p class="hint">Price the full recipe use of these tickers even if the plan makes them.</p>
+      </details>
+
+      <div class="actions">
+        <button type="submit" id="calculate">Count the units</button>
+      </div>
+    </form>
+      </section>
+      <section id="results" class="pane results-pane" aria-label="Results"></section>
+    </div>
+  </div>
+  <script src="calculator.js"></script>
+</body>
+</html>

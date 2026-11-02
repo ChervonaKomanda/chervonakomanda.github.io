@@ -52,6 +52,8 @@
   ];
 
   const EXPERT_BONUS = [0, 0.0306, 0.0696, 0.1248, 0.1974, 0.2840];
+  // Handbook "Days required", in hundredths of a day. Each row starts over after the previous expert.
+  const EXPERT_UNLOCK_HUNDREDTHS = [0, 1000, 1250, 5757, 27650, 91510];
   const MAX_EXPERTS_PER_CATEGORY = 5;
   const MAX_EXPERTS_TOTAL = 6;
   const VWAP_CURRENCY = "CIS";
@@ -203,15 +205,42 @@
     return 1 + bonus;
   }
 
+  function expertUnlockDay(count) {
+    const n = Math.max(0, Math.floor(Number(count) || 0));
+    const last = Math.min(n, EXPERT_UNLOCK_HUNDREDTHS.length - 1);
+    let hundredths = 0;
+    for (let i = 1; i <= last; i += 1) hundredths += EXPERT_UNLOCK_HUNDREDTHS[i];
+    return hundredths / 100;
+  }
+
+  function expertCountAtWeek(start, end, week) {
+    const from = Math.max(0, Math.floor(Number(start) || 0));
+    let to = Math.max(0, Math.floor(Number(end) || 0));
+    if (to < from) to = from;
+    const cap = EXPERT_UNLOCK_HUNDREDTHS.length - 1;
+    const owned = Math.min(from, cap);
+    const goal = Math.min(to, cap);
+    const weekStart = (Math.max(1, Math.floor(Number(week) || 1)) - 1) * 7;
+    let active = owned;
+    for (let n = owned + 1; n <= goal; n += 1) {
+      const unlock = expertUnlockDay(n) - expertUnlockDay(owned);
+      if (weekStart > unlock) active = n;
+      else break;
+    }
+    return active;
+  }
+
   function expertRamp(start, end) {
-    const factorStart = expertFactor(start);
-    const factorEnd = expertFactor(end);
+    const from = Math.max(0, Math.floor(Number(start) || 0));
+    const to = Math.max(from, Math.floor(Number(end) || 0));
+    const factorStart = expertFactor(from);
+    const factorEnd = expertFactor(to);
     return {
-      start: start,
-      end: end,
+      start: from,
+      end: to,
       factorStart: factorStart,
       factorEnd: factorEnd,
-      factor: (factorStart + factorEnd) / 2,
+      factor: factorStart,
     };
   }
 
@@ -281,12 +310,6 @@
     return program.replace(/_/g, " ");
   }
 
-  function industryZoneMatch(building, cogc) {
-    const program = String(cogc || "").toUpperCase();
-    const expertise = String(building && building.Expertise || "").toUpperCase();
-    return !!(INDUSTRY_COGC[program] && expertise && expertise === program);
-  }
-
   function cogcMultiplier(building, cogc) {
     const program = String(cogc || "").toUpperCase();
     if (!program || program === "---") return 1;
@@ -306,15 +329,13 @@
     return 1 + fertility * (10 / 33);
   }
 
-  function buildingBaseFactor(building, planet, cogc, hqInZone, workforce) {
+  function buildingBaseFactor(building, planet, cogc, workforce) {
     const fertility = fertilityMultiplier(building, planet);
-    const hq = hqInZone && industryZoneMatch(building, cogc) ? 1.1 : 1;
     const cogcFactor = cogcMultiplier(building, cogc);
     const workers = buildingWorkforceEfficiency(building, workforce);
     return {
-      factor: fertility * hq * cogcFactor * workers,
+      factor: fertility * cogcFactor * workers,
       fertility: fertility,
-      hq: hq,
       cogc: cogcFactor,
       workforce: workers,
     };
@@ -1254,7 +1275,7 @@
     const workforce = workforceRecord(pricedGroups, input.habitations || {}, input.workforceLux || null);
     for (const group of pricedGroups) {
       const building = getBuilding(input.catalog, group.ticker);
-      const parts = buildingBaseFactor(building, input.planet || null, input.cogc, !!input.hqInZone, workforce);
+      const parts = buildingBaseFactor(building, input.planet || null, input.cogc, workforce);
       const industry = industryExpertCount(building, input);
       let expertCount = null;
       let expertStart = null;
@@ -1288,7 +1309,6 @@
         cogc: parts.cogc,
         workforce: parts.workforce,
         fertility: parts.fertility,
-        hq: parts.hq,
       };
       for (let i = 0; i < group.recipes.length; i += 1) {
         group.recipes[i].baseFactor = parts.factor;
@@ -1330,7 +1350,7 @@
         });
         const planScale = recipe.expertEnd == null
           ? 1
-          : (recipe.baseFactor > 0 ? recipe.baseFactor : 0) * expertFactor(recipe.expertEnd);
+          : (recipe.baseFactor > 0 ? recipe.baseFactor : 0);
         if (recipe.expertEnd != null) flowBasis = "plan";
         for (const output of recipe.weeklyOutputs) {
           addAmount(produced, output.ticker, output.amount);
@@ -1495,7 +1515,6 @@
         workers: workers,
         workforce: workforce,
         cogc: input.cogc || "",
-        hqInZone: !!input.hqInZone,
         owed: owed,
         flows: { produced: produced, consumed: consumed, unknown: unknown },
         flowBasis: flowBasis,
@@ -1605,12 +1624,23 @@
   }
 
 
-  function factorAtWeek(ramp, week, weeks) {
-    const start = ramp && Number.isFinite(ramp.factorStart) ? ramp.factorStart : 1;
-    const end = ramp && Number.isFinite(ramp.factorEnd) ? ramp.factorEnd : start;
-    if (!(weeks > 1)) return start;
-    const t = (week - 1) / (weeks - 1);
-    return start + (end - start) * t;
+  function factorAtWeek(ramp, week) {
+    const start = ramp && Number.isFinite(ramp.start) ? ramp.start : 0;
+    const end = ramp && Number.isFinite(ramp.end) ? ramp.end : start;
+    return expertFactor(expertCountAtWeek(start, end, week));
+  }
+
+  function expertCountForPart(part, ramp, week) {
+    if (part && part.expertEnd != null) {
+      const end = Math.max(0, Math.floor(Number(part.expertEnd) || 0));
+      if (!(end > 0)) return 0;
+      const start = part.expertStart != null ? Math.max(0, Math.floor(Number(part.expertStart) || 0)) : 0;
+      return expertCountAtWeek(start, end, week);
+    }
+    if (part && part.expertCount != null) return Math.max(0, Math.floor(Number(part.expertCount) || 0));
+    const start = ramp && Number.isFinite(Number(ramp.start)) ? Number(ramp.start) : 0;
+    const end = ramp && Number.isFinite(Number(ramp.end)) ? Number(ramp.end) : start;
+    return expertCountAtWeek(start, end, week);
   }
 
   function targetMet(goods, cost, multiplier) {
@@ -1631,20 +1661,9 @@
     return null;
   }
 
-  function partScale(part, ramp, week, weeks) {
+  function partScale(part, ramp, week) {
     const base = part.baseFactor > 0 ? part.baseFactor : 0;
-    let expert;
-    if (part.expertStart != null && part.expertEnd != null) {
-      const start = expertFactor(part.expertStart);
-      const end = expertFactor(part.expertEnd);
-      if (!(weeks > 1)) expert = start;
-      else expert = start + (end - start) * ((week - 1) / (weeks - 1));
-    } else if (part.expertCount == null) {
-      expert = factorAtWeek(ramp, week, weeks);
-    } else {
-      expert = expertFactor(part.expertCount);
-    }
-    return base * expert;
+    return base * expertFactor(expertCountForPart(part, ramp, week));
   }
 
   function solveTerm(input) {
@@ -1672,15 +1691,24 @@
     for (let week = 1; week <= weeks; week += 1) {
       const produced = {};
       const consumed = {};
+      let scaleSum = 0;
+      let scaleN = 0;
+      let expertBonus = false;
+      function takeScale(part) {
+        const count = expertCountForPart(part, ramp, week);
+        if (count > 0) expertBonus = true;
+        const scale = partScale(part, ramp, week);
+        scaleSum += scale;
+        scaleN += 1;
+        return part.weeklyAtRate * scale;
+      }
       for (let i = 0; i < outputs.length; i += 1) {
-        const part = outputs[i];
-        const amount = part.weeklyAtRate * partScale(part, ramp, week, weeks);
-        if (amount > 0) produced[part.ticker] = (produced[part.ticker] || 0) + amount;
+        const amount = takeScale(outputs[i]);
+        if (amount > 0) produced[outputs[i].ticker] = (produced[outputs[i].ticker] || 0) + amount;
       }
       for (let i = 0; i < inputs.length; i += 1) {
-        const part = inputs[i];
-        const amount = part.weeklyAtRate * partScale(part, ramp, week, weeks);
-        if (amount > 0) consumed[part.ticker] = (consumed[part.ticker] || 0) + amount;
+        const amount = takeScale(inputs[i]);
+        if (amount > 0) consumed[inputs[i].ticker] = (consumed[inputs[i].ticker] || 0) + amount;
       }
       const received = [];
       let goods = 0;
@@ -1730,10 +1758,20 @@
       const profit = cumGoods - cumCost;
       if (profitWeek == null && profit >= -0.005) profitWeek = week;
       if (oweGoods && targetWeek == null && targetMet(cumGoods, cumCost, multiplier)) targetWeek = week;
+      function linesFromMap(map) {
+        return Object.keys(map).filter(function (ticker) {
+          return map[ticker] > 0;
+        }).map(function (ticker) {
+          return { ticker: ticker, amount: map[ticker] };
+        });
+      }
       schedule.push({
         week: week,
-        factor: factorAtWeek(ramp, week, weeks),
+        factor: scaleN ? scaleSum / scaleN : factorAtWeek(ramp, week),
+        expertBonus: expertBonus,
         received: received,
+        outputUnits: linesFromMap(produced),
+        inputUnits: linesFromMap(consumed),
         goods: goods,
         materialSupply: materialSupply,
         degradationCost: weeklyDegradation,
@@ -2023,7 +2061,6 @@
       workers: bill.workers,
       workforce: bill.workforce || null,
       cogc: bill.cogc || "",
-      hqInZone: !!bill.hqInZone,
       flowBasis: bill.flowBasis || "recipe",
       notes: bill.notes.slice(),
       schedule: schedule,
@@ -2761,51 +2798,6 @@
     return formatQty(Math.round(safe * 100) / 100) + " weeks (" + formatQty(Math.round(days * 10) / 10) + " days)";
   }
 
-  function bonusText(factor) {
-    if (!(factor > 1 + 1e-9)) return "the recipe rate";
-    const pct = Math.round((factor - 1) * 10000) / 100;
-    return formatQty(pct) + "% above the recipe rate";
-  }
-
-  function expertSummary(result) {
-    const groups = (result.groups || []).filter(function (group) {
-      const efficiency = group.efficiency;
-      return group.recipes && group.recipes.length && efficiency && efficiency.expertStart != null && efficiency.expertEnd != null;
-    });
-    if (!groups.length) return expertText(result.experts);
-    const parts = groups.map(function (group) {
-      const efficiency = group.efficiency;
-      const label = efficiency.expertise ? efficiency.expertise.replace(/_/g, " ") : group.ticker;
-      const endBonus = bonusText(expertFactor(efficiency.expertEnd));
-      if (efficiency.expertStart === efficiency.expertEnd) {
-        return group.ticker + " uses " + formatQty(efficiency.expertEnd) + " " + label + " experts (" + endBonus + ") every week.";
-      }
-      return group.ticker + " goes from " + formatQty(efficiency.expertStart) + " to " + formatQty(efficiency.expertEnd) + " " + label + " experts (" + endBonus + " at the end).";
-    });
-    return {
-      fact: "Experts at week 1 are 0. " + parts.join(" "),
-      rest: " Each week between them sits on a straight line. 0 experts is the FIO recipe duration. This page does not schedule expert unlocks.",
-    };
-  }
-
-  function expertText(experts) {
-    const ramp = experts || expertRamp(0, 0);
-    const startLabel = formatQty(ramp.start) + (ramp.start === 1 ? " expert" : " experts");
-    const endLabel = formatQty(ramp.end) + (ramp.end === 1 ? " expert" : " experts");
-    const fact = startLabel + " at week 1 (" + bonusText(ramp.factorStart) + "), and " + endLabel + " at the last week (" + bonusText(ramp.factorEnd) + ").";
-    let rest = "";
-    if (ramp.start > 5 || ramp.end > 5) {
-      rest += " A count above 5 uses the 5-expert handbook bonus, 28.40%.";
-    }
-    if (Math.abs(ramp.factorStart - ramp.factorEnd) <= 1e-9) {
-      rest += " Every week uses that rate. Output stays capped there.";
-    } else {
-      rest += " The rate moves in a straight line from week 1 to the last week. A week stays capped at that week's rate.";
-    }
-    rest += " 0 experts is the FIO recipe duration. This page does not schedule expert unlocks.";
-    return { fact: fact, rest: rest };
-  }
-
   function supplyWeekParts(result) {
     const amount = varies("Building degradation is " + cashOf(result, result.weeklyDegradation || 0) + " a week");
     const tail = ", and it is inside the supply cost.";
@@ -2868,11 +2860,34 @@
     return name + ", after " + weeks + " weeks: owed goods " + goods + ". Cumulative profit " + profit + " on a cost of " + cost + ". " + profitLine + " " + targetLine;
   }
 
-  function receivedText(received) {
-    if (!received || !received.length) return "0";
-    return received.map(function (item) {
+  function amountList(lines) {
+    return (lines || []).filter(function (item) {
+      return item && item.amount > 0 && item.ticker;
+    }).map(function (item) {
       return formatQty(item.amount) + " " + item.ticker;
     }).join(", ");
+  }
+
+  function receivedText(received) {
+    const text = amountList(received);
+    return text || "0";
+  }
+
+  function unitsCellText(row) {
+    const outputLines = (row && (row.outputUnits || row.received)) || [];
+    const seen = {};
+    outputLines.forEach(function (item) {
+      if (item && item.ticker && item.amount > 0) seen[item.ticker] = true;
+    });
+    const outputs = amountList(outputLines);
+    const inputSource = row && row.inputUnits ? row.inputUnits : (row && row.supplyLines || []).filter(function (line) {
+      return line.kind === "input";
+    });
+    const inputs = amountList((inputSource || []).filter(function (item) {
+      return item && item.ticker && !seen[item.ticker];
+    }));
+    if (outputs && inputs) return outputs + " · " + inputs;
+    return outputs || inputs || "0";
   }
 
   function renderSchedule(schedule, profitWeek, exchange, currency) {
@@ -2888,9 +2903,9 @@
       const profitClasses = ["num"];
       if (row.cumulativeProfit < -0.005) profitClasses.push("neg");
       if (row.week === profitWeek) profitClasses.push("met");
-      body.append(el("tr", { "data-week": String(row.week) }, [
+      body.append(el("tr", { "data-week": String(row.week), "data-expert-bonus": row.expertBonus ? "yes" : "no" }, [
         el("td", {}, [String(row.week)]),
-        el("td", {}, [receivedText(row.received)]),
+        el("td", { "data-field": "units" }, [unitsCellText(row)]),
         el("td", { class: "num", "data-field": "supply" }, [formatMoney(row.supplyCost, code)]),
         el("td", { class: "num", "data-field": "build" }, [formatMoney(row.buildCost, code)]),
         el("td", { class: "num", "data-field": "cumulative-goods" }, [formatMoney(row.cumulativeGoods, code)]),
@@ -2901,39 +2916,6 @@
     table.append(body);
     wrap.append(table);
     return wrap;
-  }
-
-  function hqZoneParts(result) {
-    const name = cogcName(result.cogc);
-    const industry = !!INDUSTRY_COGC[String(result.cogc || "").toUpperCase()];
-    if (result.hqInZone && industry) {
-      return {
-        fact: "HQ in the matching zone is yes, and the planet COGC is " + name + ".",
-        rest: " The ×1.10 HQ bonus applies on top of that COGC, and only on buildings in the " + name + " zone.",
-      };
-    }
-    if (result.hqInZone && name) {
-      return {
-        fact: "HQ in the matching zone is yes, but the planet COGC is " + name + ", which is not an industry zone such as Agriculture or Resource extraction.",
-        rest: " The HQ bonus stays off. The workforce COGC still applies.",
-      };
-    }
-    if (result.hqInZone) {
-      return {
-        fact: "HQ in the matching zone is yes, but this planet has no COGC.",
-        rest: " The HQ bonus stays off.",
-      };
-    }
-    if (name) {
-      return {
-        fact: "HQ in the matching zone is no. The planet COGC is " + name + ", and that bonus still applies.",
-        rest: " The HQ bonus does not.",
-      };
-    }
-    return {
-      fact: "HQ in the matching zone is no, and this planet has no COGC.",
-      rest: " The HQ bonus does not apply.",
-    };
   }
 
   function efficiencyLines(result) {
@@ -2947,19 +2929,10 @@
     } else {
       lines.push({ fact: "No COGC is set.", rest: " The COGC factor is 1." });
     }
-    lines.push(hqZoneParts(result));
     (result.groups || []).forEach(function (group) {
       const efficiency = group.efficiency;
       if (!efficiency || !group.recipes.length) return;
-      let experts;
-      if (efficiency.expertStart != null && efficiency.expertEnd != null && efficiency.expertStart !== efficiency.expertEnd) {
-        experts = formatQty(efficiency.expertStart) + " at week 1 to " + formatQty(efficiency.expertEnd) + " at the end for " + (efficiency.expertise || "this building");
-      } else if (efficiency.expertCount == null) {
-        experts = "the expert fields on the form";
-      } else {
-        experts = formatQty(efficiency.expertCount) + " experts for " + (efficiency.expertise || "this building");
-      }
-      lines.push({ fact: group.ticker + ": COGC ×" + formatQty(efficiency.cogc) + ", workforce ×" + formatQty(Math.round(efficiency.workforce * 10000) / 10000) + ", fertility ×" + formatQty(Math.round(efficiency.fertility * 10000) / 10000) + ", HQ ×" + formatQty(efficiency.hq) + ". Experts: " + experts + "." });
+      lines.push({ fact: group.ticker + ": COGC ×" + formatQty(efficiency.cogc) + ", workforce ×" + formatQty(Math.round(efficiency.workforce * 10000) / 10000) + ", fertility ×" + formatQty(Math.round(efficiency.fertility * 10000) / 10000) + "." });
     });
     const pioneer = result.workforce && result.workforce.pioneer;
     if (pioneer && pioneer.required > 0) {
@@ -3126,14 +3099,9 @@
         return el("p", {}, [line]);
       })));
     }
-    const expertsLine = expertSummary(result);
-    rootNode.append(el("p", { id: "expert-summary" }, [varies(expertsLine.fact), expertsLine.rest || ""]));
     efficiencyLines(result).forEach(function (line) {
       rootNode.append(el("p", {}, [varies(line.fact), line.rest || ""]));
     });
-    if (result.weeks === 1 && result.experts && Math.abs(result.experts.factorStart - result.experts.factorEnd) > 1e-9) {
-      rootNode.append(el("p", {}, ["This term is one week, so that week uses the week-1 expert count."]));
-    }
     if (result.pace === "zero") {
       rootNode.append(el("div", { class: "callout warn" }, [
         el("p", {}, ["A week of the owed goods is worth 0 " + (result.currency || "CIS") + ". The table still lists the weeks you asked for."]),
@@ -3257,9 +3225,9 @@
       rootNode.append(el("p", {}, [varies(line.note)]));
     });
     if (result.flowBasis === "plan") {
-      rootNode.append(el("p", {}, ["Those sentences are the plan's own production, with that plan's experts, COGC, workforce, and fertility. Pioneer lines stay at the handbook amount. Week 1 of the table is still 0 experts. Recipe inputs in the term follow each week's expert rate."]));
+      rootNode.append(el("p", {}, ["Those sentences are the plan's own production, with that plan's experts, COGC, workforce, and fertility. Pioneer lines stay at the handbook amount."]));
     } else if (result.experts && (Math.abs(result.experts.factorStart - 1) > 1e-9 || Math.abs(result.experts.factorEnd - 1) > 1e-9)) {
-      rootNode.append(el("p", {}, ["Those sentences are the FIO recipe rate. Pioneer lines stay at the handbook amount. Recipe inputs in the term follow each week's expert rate."]));
+      rootNode.append(el("p", {}, ["Those sentences are the FIO recipe rate. Pioneer lines stay at the handbook amount."]));
     }
     if (result.weekly.length) {
       const weeklyLines = result.weekly.map(function (line) {
@@ -3270,9 +3238,9 @@
       rootNode.append(materialTable(weeklyLines, false, byTicker, exchange, result.currency, true));
     }
     const supplyTableNote = result.flowBasis === "plan"
-      ? "The amounts above are the plan's own production: the experts, COGC, workforce, and fertility on that plan. Week 1 of the table is still 0 experts, and the week table prices each week at that week's rate."
+      ? "The amounts above are the plan's own production: the experts, COGC, workforce, and fertility on that plan."
       : result.supplyScale == null
-        ? "The amounts above are the recipe rate, before the expert scale. The week table prices each week at that week's rate."
+        ? "The amounts above are the recipe rate."
         : "The amounts above are the rate used for every week of this term.";
     const supplyParts = supplyWeekParts(result);
     supplyParts.push(" " + supplyTableNote + " The cost column is the " + lastLabel + " in " + (result.currency || "CIS") + ". Universe · VWAP 30D is the other price, in " + VWAP_CURRENCY + ". The buildings and the permit are not in this table.");
@@ -3285,7 +3253,7 @@
         else rootNode.append(el("p", {}, [note]));
       });
     }
-    rootNode.append(el("p", { class: "hint" }, ["The handbook bonus at 1 to 5 experts is 3.06%, 6.96%, 12.48%, 19.74%, and 28.40%. Farms and orchards also use fertility, 1 + fertility × 10/33. A fertility of −1 does not run."]));
+    rootNode.append(el("p", { class: "hint" }, ["Farms and orchards use fertility, 1 + fertility × 10/33. A fertility of −1 does not run."]));
     return rootNode;
   }
 
@@ -3359,13 +3327,6 @@
       const limit = baseAreaLimit(areaPermits);
       node.textContent = "Area " + usedText + "/" + areaFigure(limit);
       node.classList.toggle("over", used > limit);
-    }
-
-    function readHqInZone() {
-      const node = doc.getElementById("hq-zone");
-      const value = node ? String(node.value).trim().toLowerCase() : "no";
-      if (node && value !== "yes" && value !== "no") node.value = "no";
-      return value === "yes";
     }
 
     function readExchange() {
@@ -3631,14 +3592,6 @@
       return "FIO lists an establishment fee of " + formatCis(fee) + " on " + name + ". The first base on a planet is exempt. That fee is in this count only when you type it under Other CIS.";
     }
 
-    function paintExpertsEndMax(categoryCount) {
-      const ceiling = String(categoryCount == null ? MAX_EXPERTS_TOTAL : maxEndExperts(categoryCount));
-      ["experts-end", "experts-start"].forEach(function (id) {
-        const node = doc.getElementById(id);
-        if (node) node.max = ceiling;
-      });
-    }
-
     function clampRange(node, floor, ceiling, clearFlag) {
       if (!node) return;
       const raw = String(node.value).trim();
@@ -3669,17 +3622,10 @@
 
     function clampCaps(clearFlag) {
       clampRange(doc.getElementById("multiplier"), 0, 2, clearFlag);
-      const end = doc.getElementById("experts-end");
-      const start = doc.getElementById("experts-start");
-      const endMax = end ? Number(end.max) : MAX_EXPERTS_TOTAL;
-      const startMax = start ? Number(start.max) : MAX_EXPERTS_TOTAL;
-      clampRange(end, 0, Number.isFinite(endMax) ? endMax : MAX_EXPERTS_TOTAL, clearFlag);
-      clampRange(start, 0, Number.isFinite(startMax) ? startMax : MAX_EXPERTS_TOTAL, clearFlag);
       clampRange(doc.getElementById("weeks"), 1, MAX_TERM_WEEKS, clearFlag);
       clampFloor(doc.getElementById("hq-level"), 0, clearFlag);
       clampFloor(doc.getElementById("other-cis"), 0, clearFlag);
       readExchange();
-      readHqInZone();
     }
 
     async function onLoad() {
@@ -3705,9 +3651,6 @@
       const expertPlan = planExpertCount(planData);
       const loadedCategories = runningExpertTypes(built.rows, catalog);
       const cappedExperts = capLoadedExperts(expertPlan.byType, loadedCategories);
-      doc.getElementById("experts-start").value = "0";
-      doc.getElementById("experts-end").value = String(cappedExperts.count);
-      paintExpertsEndMax(loadedCategories.length);
       let outputs = outputTickersFromRows(built.rows, catalog);
       if (planetId && outputs.length) {
         setStatus("Loading planet " + planetId + "…");
@@ -3729,7 +3672,6 @@
           planet: planet,
           planetResources: planetResources,
           cogc: details.plan_cogc || "",
-          hqInZone: readHqInZone(),
           habitations: habitations,
           workforceLux: planWorkforceLux(planData),
           expertEndByType: cappedExperts.byType,
@@ -3758,15 +3700,15 @@
       const bits = ["Loaded " + planContext.name + (planetId ? " on " + planetId : "") + "."];
       if (outputs.length) bits.push("Owed materials are 100% of " + outputs.join(" and ") + ", the materials this plan makes more of than it uses.");
       else bits.push("This plan has no material it makes more of than it uses, so the owed list is empty.");
-      bits.push("Experts at week 1 are 0. Experts at the end are " + cappedExperts.count + ": " + describeExperts(cappedExperts.byType) + ".");
+      if (cappedExperts.count > 0) {
+        bits.push("The plan records " + describeExperts(cappedExperts.byType) + ".");
+      }
       if (details.plan_permits_used != null) {
         bits.push("The plan records " + details.plan_permits_used + " permit slot. That count is not a price. The permit cost is the HQ level.");
       }
       const loadedCogc = cogcName(details.plan_cogc);
-      if (loadedCogc && INDUSTRY_COGC[String(details.plan_cogc || "").toUpperCase()]) {
-        bits.push("Planet COGC is " + loadedCogc + ", which matches buildings in the " + loadedCogc + " zone.");
-      } else if (loadedCogc) {
-        bits.push("Planet COGC is " + loadedCogc + ", a workforce program.");
+      if (loadedCogc) {
+        bits.push("Planet COGC is " + loadedCogc + ".");
       } else {
         bits.push("This plan has no planet COGC.");
       }
@@ -3796,15 +3738,6 @@
       if (buy.error) throw new Error(buy.error);
       const owed = parseOwed(doc.getElementById("products").value);
       if (owed.error) throw new Error(owed.error);
-      const startNode = doc.getElementById("experts-start");
-      const expertsStart = parseExpertCount(startNode.dataset.cappedFrom || startNode.value, "Experts at week 1");
-      delete startNode.dataset.cappedFrom;
-      if (expertsStart.error) throw new Error(expertsStart.error);
-      const expertsEndNode = doc.getElementById("experts-end");
-      const expertsEnd = parseExpertCount(expertsEndNode.dataset.cappedFrom || expertsEndNode.value, "Experts at the end");
-      if (expertsEnd.error) throw new Error(expertsEnd.error);
-      const typedEnd = expertsEndNode.dataset.cappedFrom;
-      delete expertsEndNode.dataset.cappedFrom;
       const weeksNode = doc.getElementById("weeks");
       const weeks = parseWeeks(weeksNode.dataset.cappedFrom || weeksNode.value);
       delete weeksNode.dataset.cappedFrom;
@@ -3815,30 +3748,13 @@
       const catalog = await loadBuildings();
       const rows = readRows();
       const categories = runningExpertTypes(rows, catalog);
-      paintExpertsEndMax(categories.length);
-      const planTypes = planContext && planContext.expertsByType ? planContext.expertsByType : {};
-      const requestedEnd = typedEnd != null && typedEnd !== "" ? Number(typedEnd) : expertsEnd.count;
-      const endAllocation = resolveEndExperts(requestedEnd, categories, planTypes);
-      expertsEndNode.value = String(endAllocation.count);
-      let startCount = expertsStart.count;
-      let startByType = null;
-      if (categories.length) {
-        startByType = {};
-        if (startCount === 0) {
-          categories.forEach(function (key) { startByType[key] = 0; });
-        } else {
-          const startAllocation = resolveEndExperts(startCount, categories, planTypes);
-          startCount = startAllocation.count;
-          categories.forEach(function (key) { startByType[key] = startAllocation.byType[key] || 0; });
-          if (startAllocation.capped) {
-            doc.getElementById("experts-start").value = String(startAllocation.count);
-          }
-        }
-      } else if (endAllocation.capped) {
-        expertsEndNode.value = String(endAllocation.count);
-      }
-      startNode.value = String(startCount);
-      const ramp = expertRamp(startCount, endAllocation.count);
+      const planTypes = planContext && planContext.expertsByType ? planContext.expertsByType : null;
+      const appliedExperts = planTypes && categories.length
+        ? capLoadedExperts(planTypes, categories)
+        : { count: 0, byType: {} };
+      const startByType = {};
+      categories.forEach(function (key) { startByType[key] = 0; });
+      const ramp = expertRamp(0, appliedExperts.count);
       const planetChecked = planetIdOrError(doc.getElementById("planet-id").value);
       if (planetChecked.error) throw new Error(planetChecked.error);
       const planetId = planetChecked.id;
@@ -3870,12 +3786,11 @@
         planet: planet,
         planetResources: planetResources,
         cogc: planContext ? planContext.cogc : "",
-        hqInZone: readHqInZone(),
         habitations: habitations,
         workforceLux: planContext ? planContext.workforceLux : null,
       };
-      if (categories.length) {
-        billInput.expertEndByType = endAllocation.byType;
+      if (planTypes && categories.length) {
+        billInput.expertEndByType = appliedExperts.byType;
         billInput.expertStartByType = startByType;
       }
       const prepared = planBill(billInput);
@@ -3918,20 +3833,12 @@
         }
         extraNotes.push("Planet conditions add materials onto every building: rocky ground adds mineral construction granulate, and a cold planet adds insulation. Those are in the build. Production buildings also wear them in the daily degradation.");
       }
-      if (planContext && planContext.experts.length && categories.length) {
-        const split = describeExperts(endAllocation.byType);
-        if (startCount === 0) {
-          extraNotes.push([
-            varies("The loaded plan lists experts: " + planContext.experts.join(", ") + "."),
-            " Week 1 is 0 experts on every building. The last week uses " + split + ".",
-          ]);
-        } else {
-          extraNotes.push([
-            varies("The loaded plan lists experts: " + planContext.experts.join(", ") + ". Experts at week 1 are " + startCount + ". Experts at the end are " + endAllocation.count + ": " + split + "."),
-          ]);
-        }
-      } else if (planContext && planContext.expertCount === 0) {
-        extraNotes.push([varies("The loaded plan lists no experts. Experts at week 1 are 0, and experts at the end are 0.")]);
+      if (planContext && planContext.experts.length && categories.length && appliedExperts.count > 0) {
+        const split = describeExperts(appliedExperts.byType);
+        extraNotes.push([
+          varies("The loaded plan lists experts: " + planContext.experts.join(", ") + "."),
+          " The count used on those buildings is " + split + ".",
+        ]);
       }
       extraNotes.push("Each percent is the share of that output owed each week. Workforce food is its own supply line, including goods the base also makes.");
       results.replaceChildren(renderResult({
@@ -3946,8 +3853,7 @@
       let done = "Counted from the " + cx + " last trade";
       if (result.currency) done += " in " + result.currency;
       done += " and from Universe · VWAP 30D in " + VWAP_CURRENCY + ".";
-      if (categories.length) done += " Experts at the end are " + endAllocation.count + ": " + describeExperts(endAllocation.byType) + ".";
-      else done += " Experts at the end are " + endAllocation.count + ".";
+      if (appliedExperts.count > 0) done += " Experts in use are " + appliedExperts.count + ": " + describeExperts(appliedExperts.byType) + ".";
       if (multiplier.capped) done += " Profit multiplier is " + formatQty(multiplier.multiplier) + ".";
       setStatus(done);
       if (scrollLock) applyScrollLock();
@@ -3985,8 +3891,6 @@
         "hq-level": "0",
         multiplier: "1",
         weeks: "4",
-        "experts-start": "0",
-        "experts-end": "5",
       };
       Object.keys(values).forEach(function (id) {
         const node = doc.getElementById(id);
@@ -3994,8 +3898,6 @@
       });
       const exchange = doc.getElementById("exchange");
       if (exchange) exchange.value = DEFAULT_CX;
-      const zone = doc.getElementById("hq-zone");
-      if (zone) zone.value = "no";
     }
 
     function applyPageQuery() {
@@ -4032,12 +3934,11 @@
     }).catch(function () {
       setStatus("The FIO building list did not load.");
     });
-    ["multiplier", "experts-end", "experts-start", "weeks", "hq-level", "other-cis"].forEach(function (id) {
+    ["multiplier", "weeks", "hq-level", "other-cis"].forEach(function (id) {
       const node = doc.getElementById(id);
       if (node) node.addEventListener("input", function () { clampCaps(true); });
     });
     doc.getElementById("exchange").addEventListener("change", readExchange);
-    doc.getElementById("hq-zone").addEventListener("change", readHqInZone);
     doc.getElementById("calculate").addEventListener("click", function () { clampCaps(false); }, true);
     form.addEventListener("keydown", function (event) {
       if (event.key === "Enter") clampCaps(false);
@@ -4084,6 +3985,8 @@
     workforceEfficiencyValue: workforceEfficiencyValue,
     partScale: partScale,
     expertFactor: expertFactor,
+    expertUnlockDay: expertUnlockDay,
+    expertCountAtWeek: expertCountAtWeek,
     expertRamp: expertRamp,
     factorAtWeek: factorAtWeek,
     MAX_TERM_WEEKS: MAX_TERM_WEEKS,

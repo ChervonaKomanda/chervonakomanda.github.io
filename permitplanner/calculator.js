@@ -53,10 +53,52 @@
 
   const EXPERT_BONUS = [0, 0.0306, 0.0696, 0.1248, 0.1974, 0.2840];
   // Handbook "Days required", in hundredths of a day. Each row starts over after the previous expert.
+  // Calendar days for a row = listed days / building weight / (1 + bonus already active).
   const EXPERT_UNLOCK_HUNDREDTHS = [0, 1000, 1250, 5757, 27650, 91510];
+  // Bonus already active on the unlock clock, indexed by experts owned.
+  // Owned 0–3 use that count's handbook bonus. The fifth interval uses 28.40%
+  // (915.10 / N / 1.2840), so 21 buildings reach expert 5 in ~49.26 days.
+  const EXPERT_CLOCK_BONUS = [0, 0.0306, 0.0696, 0.1248, 0.2840];
   const MAX_EXPERTS_PER_CATEGORY = 5;
   const MAX_EXPERTS_TOTAL = 6;
   const VWAP_CURRENCY = "CIS";
+  const EXCHANGE_CURRENCY = {
+    AI1: "AIC",
+    CI1: "CIS",
+    CI2: "CIS",
+    IC1: "ICA",
+    NC1: "NCC",
+    NC2: "NCC",
+  };
+  // PRUNplanner publishes vwap_30d for AI1, CI1, IC1, NC1, and UNIVERSE.
+  // CI2 has no series, so CIS uses CI1. NC2 has no series, so NCC uses NC1.
+  // UNIVERSE is the CIS blend and stays a fallback.
+  const VWAP_MARKET = {
+    AI1: "AI1",
+    CI1: "CI1",
+    CI2: "CI1",
+    IC1: "IC1",
+    NC1: "NC1",
+    NC2: "NC1",
+  };
+
+  function exchangeCurrency(code) {
+    return EXCHANGE_CURRENCY[normalizeExchange(code)] || VWAP_CURRENCY;
+  }
+
+  function vwapMarket(code) {
+    return VWAP_MARKET[normalizeExchange(code)] || "CI1";
+  }
+
+  function vwapColumnLabel(code) {
+    return vwapMarket(code) + " · VWAP 30D";
+  }
+
+  function vwapSeriesName(row, exchange) {
+    if (row && row.vwapExchange === "UNIVERSE") return BOOK_VWAP;
+    if (row && row.vwapExchange) return row.vwapExchange + " · VWAP 30D";
+    return vwapColumnLabel(exchange);
+  }
 
   const EXPERTISE_TO_EXPERT = {
     AGRICULTURE: "Agriculture",
@@ -205,26 +247,78 @@
     return 1 + bonus;
   }
 
-  function expertUnlockDay(count) {
-    const n = Math.max(0, Math.floor(Number(count) || 0));
-    const last = Math.min(n, EXPERT_UNLOCK_HUNDREDTHS.length - 1);
-    let hundredths = 0;
-    for (let i = 1; i <= last; i += 1) hundredths += EXPERT_UNLOCK_HUNDREDTHS[i];
-    return hundredths / 100;
+  function clockBonus(owned) {
+    const n = Math.max(0, Math.floor(Number(owned) || 0));
+    if (n <= 0) return 0;
+    return EXPERT_CLOCK_BONUS[Math.min(n, EXPERT_CLOCK_BONUS.length - 1)] || 0;
   }
 
-  function expertCountAtWeek(start, end, week) {
+  function expertStageDays(stage, weight) {
+    const index = Math.floor(Number(stage) || 0);
+    if (index < 1 || index >= EXPERT_UNLOCK_HUNDREDTHS.length) return Infinity;
+    const listed = EXPERT_UNLOCK_HUNDREDTHS[index] / 100;
+    const pace = Number(weight) * (1 + clockBonus(index - 1));
+    if (!(pace > 0)) return Infinity;
+    return listed / pace;
+  }
+
+  function expertUnlockDay(count, weight) {
+    const n = Math.max(0, Math.floor(Number(count) || 0));
+    const last = Math.min(n, EXPERT_UNLOCK_HUNDREDTHS.length - 1);
+    const pace = weight == null || weight === "" ? 1 : Number(weight);
+    let day = 0;
+    for (let stage = 1; stage <= last; stage += 1) {
+      const span = expertStageDays(stage, pace);
+      if (!Number.isFinite(span)) return Infinity;
+      day += span;
+    }
+    return day;
+  }
+
+  function expertBounds(start, end, weight) {
     const from = Math.max(0, Math.floor(Number(start) || 0));
     let to = Math.max(0, Math.floor(Number(end) || 0));
     if (to < from) to = from;
     const cap = EXPERT_UNLOCK_HUNDREDTHS.length - 1;
     const owned = Math.min(from, cap);
     const goal = Math.min(to, cap);
-    const weekStart = (Math.max(1, Math.floor(Number(week) || 1)) - 1) * 7;
-    let active = owned;
+    const pace = Number(weight) > 0 ? Number(weight) : 0;
+    const bounds = [{ count: owned, day: 0 }];
+    let day = 0;
     for (let n = owned + 1; n <= goal; n += 1) {
-      const unlock = expertUnlockDay(n) - expertUnlockDay(owned);
-      if (weekStart > unlock) active = n;
+      const span = expertStageDays(n, pace);
+      if (!Number.isFinite(span)) break;
+      day += span;
+      bounds.push({ count: n, day: day });
+    }
+    return bounds;
+  }
+
+  function expertFactorOverWeek(start, end, weight, week) {
+    const weekIndex = Math.max(1, Math.floor(Number(week) || 1));
+    const week0 = (weekIndex - 1) * 7;
+    const week1 = week0 + 7;
+    const bounds = expertBounds(start, end, weight);
+    let acc = 0;
+    let bonus = false;
+    for (let i = 0; i < bounds.length; i += 1) {
+      const begin = Math.max(week0, bounds[i].day);
+      const next = i + 1 < bounds.length ? bounds[i + 1].day : Infinity;
+      const endDay = Math.min(week1, next);
+      if (!(endDay > begin)) continue;
+      acc += expertFactor(bounds[i].count) * (endDay - begin);
+      if (bounds[i].count > 0) bonus = true;
+    }
+    return { factor: acc / 7, expertBonus: bonus };
+  }
+
+  function expertCountAtWeek(start, end, week, weight) {
+    const weekStart = (Math.max(1, Math.floor(Number(week) || 1)) - 1) * 7;
+    const pace = weight == null || weight === "" ? 1 : Number(weight);
+    const bounds = expertBounds(start, end, pace);
+    let active = bounds[0].count;
+    for (let i = 0; i < bounds.length; i += 1) {
+      if (bounds[i].day <= weekStart) active = bounds[i].count;
       else break;
     }
     return active;
@@ -347,6 +441,10 @@
     else if (!(parts.workforce > 0)) why = "workforce efficiency is 0";
     else if (!(parts.fertility > 0)) why = "fertility does not run";
     return ticker + " cannot run here because " + why + ", and the selected recipe is still counted.";
+  }
+
+  function cannotGrowWarning(ticker) {
+    return ticker + ": the planet cannot grow it.";
   }
 
   function planetSpecials(planet, areaCost) {
@@ -1273,6 +1371,7 @@
     }
 
     const workforce = workforceRecord(pricedGroups, input.habitations || {}, input.workforceLux || null);
+    const cannotGrow = [];
     for (const group of pricedGroups) {
       const building = getBuilding(input.catalog, group.ticker);
       const parts = buildingBaseFactor(building, input.planet || null, input.cogc, workforce);
@@ -1319,7 +1418,19 @@
       const selectedOutput = group.recipes.some(function (recipe) {
         return recipe.orders > 0 && recipe.outputs && recipe.outputs.length;
       });
-      if (!(parts.factor > 0) && selectedOutput) {
+      if (!(parts.factor > 0) && selectedOutput && !(parts.fertility > 0)) {
+        group.cannotGrow = {};
+        for (let i = 0; i < group.recipes.length; i += 1) {
+          const recipe = group.recipes[i];
+          if (!(recipe.orders > 0) || !recipe.outputs) continue;
+          for (let o = 0; o < recipe.outputs.length; o += 1) {
+            const outputTicker = recipe.outputs[o].ticker;
+            if (!outputTicker || group.cannotGrow[outputTicker]) continue;
+            group.cannotGrow[outputTicker] = true;
+            cannotGrow.push(outputTicker);
+          }
+        }
+      } else if (!(parts.factor > 0) && selectedOutput) {
         group.cannotRun = cannotRunNote(group.ticker, parts);
         for (let i = 0; i < group.recipes.length; i += 1) {
           if (group.recipes[i].orders > 0) group.recipes[i].baseFactor = 1;
@@ -1331,6 +1442,30 @@
           group.perBuilding.push({ ticker: specials[i].ticker, amount: specials[i].amount });
         }
       }
+    }
+
+    const expertWeight = {};
+    for (let g = 0; g < pricedGroups.length; g += 1) {
+      const group = pricedGroups[g];
+      const building = getBuilding(input.catalog, group.ticker);
+      const key = EXPERTISE_TO_EXPERT[String(building && building.Expertise || "").toUpperCase()];
+      if (!key) continue;
+      let factor = 0;
+      for (let i = 0; i < group.recipes.length; i += 1) {
+        const recipe = group.recipes[i];
+        if (!(recipe.orders > 0) || !(recipe.durationMs > 0)) continue;
+        if (recipe.baseFactor > factor) factor = recipe.baseFactor;
+      }
+      if (!(factor > 0) || !(group.count > 0)) continue;
+      expertWeight[key] = (expertWeight[key] || 0) + group.count * factor;
+    }
+    for (let g = 0; g < pricedGroups.length; g += 1) {
+      const group = pricedGroups[g];
+      const building = getBuilding(input.catalog, group.ticker);
+      const key = EXPERTISE_TO_EXPERT[String(building && building.Expertise || "").toUpperCase()];
+      const weight = key && expertWeight[key] > 0 ? expertWeight[key] : 0;
+      if (group.efficiency) group.efficiency.expertWeight = weight;
+      for (let i = 0; i < group.recipes.length; i += 1) group.recipes[i].expertWeight = weight;
     }
 
     const produced = {};
@@ -1346,7 +1481,9 @@
           return { ticker: row.ticker, amount: weeklyAmount(group.count, group.recipes, recipe, row.amount) };
         });
         recipe.weeklyOutputs = recipe.outputs.map(function (output) {
-          return { ticker: output.ticker, amount: weeklyAmount(group.count, group.recipes, recipe, output.amount) };
+          const recipeAmount = weeklyAmount(group.count, group.recipes, recipe, output.amount);
+          const amount = group.cannotGrow && group.cannotGrow[output.ticker] ? 0 : recipeAmount;
+          return { ticker: output.ticker, amount: amount };
         });
         const planScale = recipe.expertEnd == null
           ? 1
@@ -1436,13 +1573,14 @@
       if (unknown[item.ticker] && !(produced[item.ticker] > 0)) {
         return { error: item.ticker + " is on the plan, and this count has no cycle amount for it." };
       }
+      const barren = cannotGrow.indexOf(item.ticker) >= 0;
       const weeklyOutput = produced[item.ticker] || 0;
-      if (!(weeklyOutput > 0)) {
+      if (!(weeklyOutput > 0) && !barren) {
         return { error: "These buildings do not produce " + item.ticker + ". Set the buildings that make it, or pick another ticker." };
       }
       const netMade = (flowBasis === "plan" ? ratedProduced[item.ticker] : produced[item.ticker]) || 0;
       const netUsed = (flowBasis === "plan" ? ratedConsumed[item.ticker] : consumed[item.ticker]) || 0;
-      if (!(netMade - netUsed > 1e-8)) {
+      if (!barren && !(netMade - netUsed > 1e-8)) {
         const madeText = formatQty(netMade);
         const useText = formatQty(netUsed);
         notes.push(flowBasis === "plan"
@@ -1457,7 +1595,7 @@
           if (hit && hit.amount > 0) running += hit.amount * (recipe.baseFactor > 0 ? recipe.baseFactor : 0);
         }
       }
-      if (!(running > 0)) {
+      if (!(running > 0) && !barren) {
         notes.push(item.ticker + " cannot run here, and the selected recipe is still counted.");
       }
       const sources = [];
@@ -1518,6 +1656,7 @@
         owed: owed,
         flows: { produced: produced, consumed: consumed, unknown: unknown },
         flowBasis: flowBasis,
+        cannotGrow: cannotGrow,
         fromPlan: !!input.fromPlan,
         buyAnyway: Array.from(buyAnyway),
         tickers: Array.from(need).sort(),
@@ -1625,22 +1764,27 @@
 
 
   function factorAtWeek(ramp, week) {
-    const start = ramp && Number.isFinite(ramp.start) ? ramp.start : 0;
-    const end = ramp && Number.isFinite(ramp.end) ? ramp.end : start;
-    return expertFactor(expertCountAtWeek(start, end, week));
-  }
-
-  function expertCountForPart(part, ramp, week) {
-    if (part && part.expertEnd != null) {
-      const end = Math.max(0, Math.floor(Number(part.expertEnd) || 0));
-      if (!(end > 0)) return 0;
-      const start = part.expertStart != null ? Math.max(0, Math.floor(Number(part.expertStart) || 0)) : 0;
-      return expertCountAtWeek(start, end, week);
-    }
-    if (part && part.expertCount != null) return Math.max(0, Math.floor(Number(part.expertCount) || 0));
     const start = ramp && Number.isFinite(Number(ramp.start)) ? Number(ramp.start) : 0;
     const end = ramp && Number.isFinite(Number(ramp.end)) ? Number(ramp.end) : start;
-    return expertCountAtWeek(start, end, week);
+    return expertFactorOverWeek(start, end, 1, week).factor;
+  }
+
+  function expertSpan(part, ramp, week) {
+    if (part && part.expertEnd != null) {
+      const end = Math.max(0, Math.floor(Number(part.expertEnd) || 0));
+      if (!(end > 0)) return { factor: expertFactor(0), expertBonus: false };
+      const start = part.expertStart != null ? Math.max(0, Math.floor(Number(part.expertStart) || 0)) : 0;
+      const pace = part.expertWeight == null || part.expertWeight === "" ? 1 : Number(part.expertWeight);
+      return expertFactorOverWeek(Math.min(start, end), end, pace > 0 ? pace : 0, week);
+    }
+    if (part && part.expertCount != null) {
+      const count = Math.max(0, Math.floor(Number(part.expertCount) || 0));
+      return { factor: expertFactor(count), expertBonus: count > 0 };
+    }
+    const start = ramp && Number.isFinite(Number(ramp.start)) ? Number(ramp.start) : 0;
+    const end = ramp && Number.isFinite(Number(ramp.end)) ? Number(ramp.end) : start;
+    const pace = part && part.expertWeight != null && part.expertWeight !== "" ? Number(part.expertWeight) : 1;
+    return expertFactorOverWeek(start, end, pace > 0 ? pace : 0, week);
   }
 
   function targetMet(goods, cost, multiplier) {
@@ -1663,7 +1807,19 @@
 
   function partScale(part, ramp, week) {
     const base = part.baseFactor > 0 ? part.baseFactor : 0;
-    return base * expertFactor(expertCountForPart(part, ramp, week));
+    return base * expertSpan(part, ramp, week).factor;
+  }
+
+  function expert0Weekly(parts) {
+    const map = {};
+    for (let i = 0; i < (parts || []).length; i += 1) {
+      const part = parts[i];
+      const base = part.baseFactor > 0 ? part.baseFactor : 0;
+      const amount = (part.weeklyAtRate || 0) * base;
+      if (!(amount > 0) || !part.ticker) continue;
+      map[part.ticker] = (map[part.ticker] || 0) + amount;
+    }
+    return map;
   }
 
   function solveTerm(input) {
@@ -1687,6 +1843,8 @@
     let profitWeek = null;
     let targetWeek = null;
     let anyGoods = false;
+    const seenOutput = {};
+    const retiredExport = {};
 
     for (let week = 1; week <= weeks; week += 1) {
       const produced = {};
@@ -1695,9 +1853,9 @@
       let scaleN = 0;
       let expertBonus = false;
       function takeScale(part) {
-        const count = expertCountForPart(part, ramp, week);
-        if (count > 0) expertBonus = true;
-        const scale = partScale(part, ramp, week);
+        const span = expertSpan(part, ramp, week);
+        if (span.expertBonus) expertBonus = true;
+        const scale = (part.baseFactor > 0 ? part.baseFactor : 0) * span.factor;
         scaleSum += scale;
         scaleN += 1;
         return part.weeklyAtRate * scale;
@@ -1710,13 +1868,31 @@
         const amount = takeScale(inputs[i]);
         if (amount > 0) consumed[inputs[i].ticker] = (consumed[inputs[i].ticker] || 0) + amount;
       }
+      const producedTickers = Object.keys(produced);
+      for (let p = 0; p < producedTickers.length; p += 1) seenOutput[producedTickers[p]] = true;
+      const netByTicker = {};
+      const exportTickers = Object.keys(seenOutput);
+      for (let p = 0; p < exportTickers.length; p += 1) {
+        const ticker = exportTickers[p];
+        const net = (produced[ticker] || 0) - (consumed[ticker] || 0);
+        netByTicker[ticker] = net;
+        if (!retiredExport[ticker] && !(net > 0)) retiredExport[ticker] = true;
+      }
+      const netUnits = [];
+      for (let p = 0; p < producedTickers.length; p += 1) {
+        const ticker = producedTickers[p];
+        if (retiredExport[ticker]) continue;
+        const net = netByTicker[ticker];
+        if (net > 0) netUnits.push({ ticker: ticker, amount: net });
+      }
       const received = [];
       let goods = 0;
       if (oweGoods) {
         for (let i = 0; i < owed.length; i += 1) {
           const item = owed[i];
           const net = (produced[item.ticker] || 0) - (consumed[item.ticker] || 0);
-          const amount = (net > 0 ? net : 0) * item.fraction;
+          const stillExport = seenOutput[item.ticker] && !retiredExport[item.ticker] && net > 0;
+          const amount = stillExport ? net * item.fraction : 0;
           const value = amount * item.price;
           goods += value;
           received.push({ ticker: item.ticker, amount: amount, value: value });
@@ -1728,6 +1904,7 @@
       }
       if (goods > 0) anyGoods = true;
       let materialSupply = 0;
+      let shortfallCost = 0;
       const supplyLines = [];
       const consumedTickers = Object.keys(consumed);
       for (let i = 0; i < consumedTickers.length; i += 1) {
@@ -1743,6 +1920,7 @@
         if (price == null) continue;
         const cost = bought * price;
         materialSupply += cost;
+        if (made > 0) shortfallCost += cost;
         supplyLines.push({ ticker: ticker, amount: bought, price: price, cost: cost, kind: "input" });
       }
       for (let i = 0; i < workforce.length; i += 1) {
@@ -1770,12 +1948,13 @@
         factor: scaleN ? scaleSum / scaleN : factorAtWeek(ramp, week),
         expertBonus: expertBonus,
         received: received,
-        outputUnits: linesFromMap(produced),
+        outputUnits: netUnits,
         inputUnits: linesFromMap(consumed),
         goods: goods,
         materialSupply: materialSupply,
         degradationCost: weeklyDegradation,
         supplyCost: supplyCost,
+        shortfallCost: shortfallCost,
         supplyLines: supplyLines,
         buildCost: buildCost,
         cumulativeGoods: cumGoods,
@@ -1927,6 +2106,7 @@
           expertCount: recipe.expertCount == null ? null : recipe.expertCount,
           expertStart: recipe.expertStart == null ? null : recipe.expertStart,
           expertEnd: recipe.expertEnd == null ? null : recipe.expertEnd,
+          expertWeight: recipe.expertWeight == null ? null : recipe.expertWeight,
         };
         for (let i = 0; i < (recipe.weeklyOutputs || []).length; i += 1) {
           const output = recipe.weeklyOutputs[i];
@@ -1952,7 +2132,8 @@
         }));
         continue;
       }
-      if (!(item.weeklyOwed > 0) || !(found.price > 0)) {
+      const barren = (bill.cannotGrow || []).indexOf(item.ticker) >= 0;
+      if ((!(item.weeklyOwed > 0) && !barren) || !(found.price > 0)) {
         return { error: "These buildings do not produce a weekly output of " + item.ticker + "." };
       }
       owedPrices.push(Object.assign({}, item, found, {
@@ -1960,6 +2141,14 @@
         recipeWeeklyOwed: item.weeklyOwed,
       }));
     }
+
+    const madeAt0 = expert0Weekly(outputs);
+    const usedAt0 = expert0Weekly(flowInputs);
+    const day1 = owedPrices.map(function (item) {
+      const net = (madeAt0[item.ticker] || 0) - (usedAt0[item.ticker] || 0);
+      const share = item.fraction > 0 ? item.fraction : 0;
+      return { ticker: item.ticker, amount: net > 0 ? net * share : 0 };
+    });
 
     const workforceLines = weeklyPriced.lines.filter(function (line) {
       return (line.kind === "pioneer" || line.kind === "workforce") && !line.leftOut;
@@ -2063,7 +2252,9 @@
       cogc: bill.cogc || "",
       flowBasis: bill.flowBasis || "recipe",
       notes: bill.notes.slice(),
+      cannotGrow: (bill.cannotGrow || []).slice(),
       schedule: schedule,
+      day1: day1,
       met: !!solved.met,
       targetWeek: solved.targetWeek,
       profitWeek: solved.profitWeek,
@@ -2283,19 +2474,35 @@
     return prices;
   }
 
-  let universeVwapCache = null;
-  async function loadUniverseVwap() {
-    if (universeVwapCache) return universeVwapCache;
+  let plannerExchangeCache = null;
+  async function loadPlannerExchanges() {
+    if (plannerExchangeCache) return plannerExchangeCache;
     const list = await fetchJson(PLANNER_EXCHANGES);
     if (!Array.isArray(list)) throw new Error("PRUNplanner exchange list was not a list.");
     const map = {};
     list.forEach(function (row) {
-      if (!row || row.exchange_code !== "UNIVERSE" || !row.ticker) return;
-      map[String(row.ticker).toUpperCase()] = row;
+      if (!row || !row.exchange_code || !row.ticker) return;
+      const code = String(row.exchange_code).toUpperCase();
+      const ticker = String(row.ticker).toUpperCase();
+      if (!map[code]) map[code] = {};
+      map[code][ticker] = row;
     });
-    if (!Object.keys(map).length) throw new Error("PRUNplanner exchange list has no UNIVERSE rows.");
-    universeVwapCache = map;
+    if (!map.UNIVERSE || !Object.keys(map.UNIVERSE).length) {
+      throw new Error("PRUNplanner exchange list has no UNIVERSE rows.");
+    }
+    plannerExchangeCache = map;
     return map;
+  }
+
+  async function loadUniverseVwap() {
+    const map = await loadPlannerExchanges();
+    return map.UNIVERSE;
+  }
+
+  function positiveVwap(row) {
+    if (!row || row.vwap_30d == null || row.vwap_30d === "") return null;
+    const raw = Number(row.vwap_30d);
+    return Number.isFinite(raw) && raw > 0 ? raw : null;
   }
 
   function alignStandInCurrency(last, rows) {
@@ -2318,13 +2525,26 @@
 
   async function fetchPriceBooks(tickers, exchange) {
     const cx = normalizeExchange(exchange);
-    let universe = {};
+    const bookCode = exchangeCurrency(cx);
+    const marketCode = vwapMarket(cx);
+    const marketLabel = vwapColumnLabel(cx);
+    let books = {};
     let bookError = "";
     try {
-      universe = await loadUniverseVwap();
+      books = await loadPlannerExchanges();
     } catch (error) {
       bookError = error && error.message ? error.message : String(error);
-      universe = {};
+      books = {};
+    }
+    function marketHit(ticker) {
+      const price = positiveVwap(books[marketCode] && books[marketCode][ticker]);
+      if (price == null) return null;
+      return { price: price, currency: bookCode, exchange: marketCode };
+    }
+    function universeHit(ticker) {
+      const price = positiveVwap(books.UNIVERSE && books.UNIVERSE[ticker]);
+      if (price == null) return null;
+      return { price: price, currency: VWAP_CURRENCY, exchange: "UNIVERSE" };
     }
     const last = {};
     const average = {};
@@ -2344,11 +2564,46 @@
           selectedBook = quote.data;
           missingName = (selectedBook && selectedBook.MaterialName) || "";
           trade = tradeFromBook(quote.symbol, quote.cx, selectedBook);
-          const source = universe[ticker];
-          const raw = source && source.vwap_30d != null && source.vwap_30d !== "" ? Number(source.vwap_30d) : NaN;
-          const vwap = Number.isFinite(raw) && raw > 0 ? raw : null;
+          const market = marketHit(ticker);
+          const universe = universeHit(ticker);
           if (!trade) {
-            if (vwap == null) {
+            if (market) {
+              const note = cx + " has no last trade for " + ticker + ". That line uses " + marketLabel + ".";
+              last[ticker] = {
+                ticker: ticker,
+                price: market.price,
+                timeMs: null,
+                materialName: missingName,
+                currency: bookCode,
+                exchange: cx,
+                standIn: true,
+              };
+              average[ticker] = {
+                ticker: ticker,
+                price: market.price,
+                timeMs: null,
+                materialName: missingName,
+                currency: bookCode,
+                exchange: marketCode,
+                fallback: "",
+              };
+              rows.push({
+                ticker: ticker,
+                materialName: missingName,
+                last: market.price,
+                lastCurrency: bookCode,
+                lastTime: null,
+                vwap: market.price,
+                vwapCurrency: bookCode,
+                vwapExchange: marketCode,
+                used: market.price,
+                usedCurrency: bookCode,
+                fallback: "",
+                lastStandIn: note,
+              });
+              continue;
+            }
+            if (!universe) {
               const found = await findCrossExchangePrice(ticker, cx, selectedBook);
               if (found.error) throw found.error;
               if (!(found.price > 0)) throw new Error("No price for " + ticker + ".");
@@ -2363,14 +2618,14 @@
                 exchange: found.exchange,
                 crossFallback: true,
               };
-              const used = found.price;
               average[ticker] = {
                 ticker: ticker,
-                price: used,
+                price: found.price,
                 timeMs: null,
                 materialName: name,
-                currency: VWAP_CURRENCY,
-                exchange: "UNIVERSE",
+                currency: sourceCurrency,
+                exchange: found.exchange,
+                crossFallback: true,
                 fallback: "",
               };
               rows.push({
@@ -2381,8 +2636,10 @@
                 lastTime: found.timeMs,
                 lastExchange: found.exchange,
                 vwap: null,
-                vwapCurrency: VWAP_CURRENCY,
-                used: used,
+                vwapCurrency: sourceCurrency,
+                vwapExchange: found.exchange,
+                used: found.price,
+                usedCurrency: sourceCurrency,
                 fallback: "",
                 crossFallback: true,
                 lastStandIn: fallbackNote(ticker, found),
@@ -2390,34 +2647,40 @@
               continue;
             }
             const note = cx + " has no last trade for " + ticker + ". That line uses " + BOOK_VWAP + ".";
+            const foreign = bookCode !== VWAP_CURRENCY;
             last[ticker] = {
               ticker: ticker,
-              price: vwap,
+              price: universe.price,
               timeMs: null,
               materialName: missingName,
               currency: VWAP_CURRENCY,
               exchange: cx,
               standIn: true,
+              crossFallback: foreign,
             };
             average[ticker] = {
               ticker: ticker,
-              price: vwap,
+              price: universe.price,
               timeMs: null,
               materialName: missingName,
               currency: VWAP_CURRENCY,
               exchange: "UNIVERSE",
+              crossFallback: foreign,
               fallback: "",
             };
             rows.push({
               ticker: ticker,
               materialName: missingName,
-              last: vwap,
+              last: universe.price,
               lastCurrency: VWAP_CURRENCY,
               lastTime: null,
-              vwap: vwap,
+              vwap: universe.price,
               vwapCurrency: VWAP_CURRENCY,
-              used: vwap,
+              vwapExchange: "UNIVERSE",
+              used: universe.price,
+              usedCurrency: VWAP_CURRENCY,
               fallback: "",
+              crossFallback: foreign,
               lastStandIn: note,
             });
             continue;
@@ -2425,19 +2688,52 @@
           last[ticker] = trade;
           const tradeCurrency = String(trade.currency || "").toUpperCase();
           let fallback = "";
-          let used = vwap;
-          if (vwap == null && tradeCurrency === VWAP_CURRENCY) {
+          let used = null;
+          let usedCurrency = bookCode;
+          let vwap = null;
+          let vwapCurrency = bookCode;
+          let vwapExchange = marketCode;
+          let averageCurrency = bookCode;
+          let averageExchange = marketCode;
+          let averageCross = false;
+          if (market) {
+            vwap = market.price;
+            used = market.price;
+            usedCurrency = bookCode;
+            vwapCurrency = bookCode;
+            vwapExchange = marketCode;
+            averageCurrency = bookCode;
+            averageExchange = marketCode;
+          } else if (universe) {
+            const foreign = bookCode !== VWAP_CURRENCY;
+            vwap = universe.price;
+            used = universe.price;
+            usedCurrency = VWAP_CURRENCY;
+            vwapCurrency = VWAP_CURRENCY;
+            vwapExchange = "UNIVERSE";
+            averageCurrency = VWAP_CURRENCY;
+            averageExchange = "UNIVERSE";
+            averageCross = foreign;
+            fallback = "No " + marketLabel + " for " + ticker + ". That line uses " + BOOK_VWAP + ".";
+          } else if (tradeCurrency === bookCode) {
             used = trade.price;
+            usedCurrency = tradeCurrency;
+            averageCurrency = tradeCurrency;
+            averageExchange = cx;
             fallback = bookError
-              ? "No Universe · VWAP 30D. The exchange list did not load (" + bookError + "). This item uses the " + cx + " last trade, which is also " + VWAP_CURRENCY + "."
-              : "No Universe · VWAP 30D for " + ticker + ". This item uses the " + cx + " last trade, which is also " + VWAP_CURRENCY + ".";
-          } else if (vwap == null) {
+              ? "No " + marketLabel + ". The exchange list did not load (" + bookError + "). This item uses the " + cx + " last trade, which is also " + bookCode + "."
+              : "No " + marketLabel + " for " + ticker + ". This item uses the " + cx + " last trade, which is also " + bookCode + ".";
+          } else {
             used = trade.price;
+            usedCurrency = tradeCurrency;
+            averageCurrency = tradeCurrency;
+            averageExchange = cx;
+            averageCross = true;
             const code = tradeCurrency || "another currency";
             const amount = formatQty(trade.price) + " " + code;
             fallback = bookError
-              ? "No Universe · VWAP 30D. The exchange list did not load (" + bookError + "). This line uses the " + cx + " last trade, " + amount + ", in the rough total."
-              : "No Universe · VWAP 30D for " + ticker + ". The " + cx + " last trade is " + amount + ", and that price is included in this rough total.";
+              ? "No " + marketLabel + ". The exchange list did not load (" + bookError + "). This line uses the " + cx + " last trade, " + amount + ", in the rough total."
+              : "No " + marketLabel + " for " + ticker + ". The " + cx + " last trade is " + amount + ", and that price is included in this rough total.";
           }
           if (used != null) {
             average[ticker] = {
@@ -2445,8 +2741,9 @@
               price: used,
               timeMs: null,
               materialName: trade.materialName || "",
-              currency: VWAP_CURRENCY,
-              exchange: "UNIVERSE",
+              currency: averageCurrency,
+              exchange: averageExchange,
+              crossFallback: averageCross,
               fallback: fallback,
             };
           }
@@ -2457,9 +2754,10 @@
             lastCurrency: tradeCurrency,
             lastTime: trade.timeMs,
             vwap: vwap,
-            vwapCurrency: VWAP_CURRENCY,
+            vwapCurrency: vwapCurrency,
+            vwapExchange: vwapExchange,
             used: used,
-            usedCurrency: vwap == null && tradeCurrency && tradeCurrency !== VWAP_CURRENCY ? tradeCurrency : VWAP_CURRENCY,
+            usedCurrency: usedCurrency,
             fallback: fallback,
           });
         } catch (error) {
@@ -2766,11 +3064,12 @@
   }
 
   function materialTable(lines, withUnit, pricesByTicker, exchange, currency, useSourceCurrency) {
-    const code = currency || "CIS";
+    const code = currency || exchangeCurrency(exchange);
     const lastLabel = lastTradeLabel(exchange);
+    const vwapLabel = vwapColumnLabel(exchange);
     const head = withUnit
-      ? ["Ticker", "Each", "Count", lastLabel, BOOK_VWAP, "Cost, last trade"]
-      : ["Ticker", "Amount", lastLabel, BOOK_VWAP, "Cost, last trade"];
+      ? ["Ticker", "Each", "Count", lastLabel, vwapLabel, "Cost, last trade"]
+      : ["Ticker", "Amount", lastLabel, vwapLabel, "Cost, last trade"];
     const table = el("table");
     table.append(el("thead", {}, [el("tr", {}, head.map(function (item, index) {
       return el("th", { scope: "col", class: index > 0 ? "num" : "" }, [item]);
@@ -2778,7 +3077,7 @@
     const body = el("tbody");
     lines.forEach(function (line) {
       const priced = pricesByTicker ? pricesByTicker[line.ticker] : null;
-      const rowCode = useSourceCurrency ? tradeRowCurrency(priced, code) : code;
+      const rowCode = useSourceCurrency || (priced && priced.crossFallback) ? tradeRowCurrency(priced, code) : code;
       const trade = line.leftOut
         ? "—"
         : priceAnchor(line.ticker, formatTableMoney(line.price, rowCode), (priced && priced.lastExchange) || exchange);
@@ -2838,7 +3137,7 @@
       pieces.append(pieceRow("Supplies in the last week", cashOf(result, result.endSupply)));
     }
     if (includeTotal) {
-      pieces.append(pieceRow("Supplies over the term", cashOf(result, result.supplyCost)));
+      pieces.append(pieceRow("Supplies over the term", cashOf(result, result.supplyCost), "term-supply"));
       pieces.append(pieceRow("Bank total", cashOf(result, result.planCost)));
       pieces.append(pieceRow("Cumulative profit", cashOf(result, result.profit)));
     }
@@ -2915,7 +3214,7 @@
   }
 
   function renderSchedule(schedule, profitWeek, exchange, currency) {
-    const code = currency || "CIS";
+    const code = currency || exchangeCurrency(exchange);
     const wrap = el("div", { class: "schedule-wrap", tabindex: "0", role: "region", "aria-label": "Week by week, " + lastTradeLabel(exchange) });
     const table = el("table", { id: "week-table", "data-currency": code });
     const headers = ["Week", "Units", "Supply cost", "Build cost", "Cumulative goods", "Cumulative cost", "Cumulative profit"];
@@ -3024,7 +3323,7 @@
 
   function renderPriceTable(rows, exchange) {
     const table = el("table", { id: "price-compare" });
-    const headers = ["Ticker", lastTradeLabel(exchange), BOOK_VWAP];
+    const headers = ["Ticker", lastTradeLabel(exchange), vwapColumnLabel(exchange)];
     table.append(el("thead", {}, [el("tr", {}, headers.map(function (item, index) {
       return el("th", { scope: "col", class: index > 0 ? "num" : "" }, [item]);
     }))]));
@@ -3032,7 +3331,7 @@
     rows.forEach(function (row) {
       const cells = [
         row.ticker + (row.materialName ? " · " + row.materialName : ""),
-        priceAnchor(row.ticker, formatTableMoney(row.last, row.lastCurrency || "CIS"), row.lastExchange || exchange),
+        priceAnchor(row.ticker, formatTableMoney(row.last, row.lastCurrency || exchangeCurrency(exchange)), row.lastExchange || exchange),
         vwapCell(row),
       ];
       body.append(el("tr", {}, cells.map(function (cell, index) {
@@ -3046,6 +3345,9 @@
   function appendBooks(rootNode, last, average, priceRows, bookError, exchange, vwapBlock) {
     const cx = normalizeExchange(exchange);
     const lastLabel = lastTradeLabel(cx);
+    const vwapLabel = vwapColumnLabel(cx);
+    const vwapCode = (average && average.currency) || exchangeCurrency(cx);
+    const lastCode = (last && last.currency) || exchangeCurrency(cx);
     const weeks = last.weeks === 1 ? "1 week" : formatQty(last.weeks) + " weeks";
     const perDay = last.schedule && last.schedule[0]
       ? last.schedule[0].received.map(function (item) {
@@ -3054,7 +3356,21 @@
       : "";
     rootNode.append(el("h2", {}, ["Totals for " + weeks]));
     if (perDay) {
+      const day1Text = (last.day1 || []).filter(function (item) {
+        return item && item.ticker && item.amount > 0;
+      }).map(function (item) {
+        return formatQty(item.amount / 7) + " " + item.ticker;
+      }).join(", ");
+      if (day1Text) {
+        rootNode.append(el("p", { id: "day1-units" }, [varies("Day 1 output: " + day1Text + ".")]));
+      }
       rootNode.append(el("p", { id: "daily-units" }, [varies((last.steady ? "Output per day: " : "Week 1 output per day: ") + perDay + ".")]));
+    }
+    const barren = last.cannotGrow || [];
+    if (barren.length) {
+      rootNode.append(el("div", { class: "callout warn", id: "fertility-warning" }, barren.map(function (ticker) {
+        return el("p", {}, [cannotGrowWarning(ticker)]);
+      })));
     }
     rootNode.append(el("p", {}, ["Same units, COGC, experts, workforce, and degradation. Only the price of each material changes."]));
     const grid = el("div", { class: "books" });
@@ -3069,11 +3385,11 @@
         dailyProfit: "vwap-daily-profit",
         plannerNet: "vwap-planner-net",
         payback: "vwap-payback",
-      }, BOOK_VWAP, "PRUNplanner’s price when no exchange preference is set. The field is vwap_30d on exchange UNIVERSE, in " + (average.currency || VWAP_CURRENCY) + "."));
+      }, vwapLabel, "The field is vwap_30d on exchange " + vwapMarket(cx) + ", in " + vwapCode + "."));
     } else {
-      grid.append(el("section", { id: "book-vwap", class: "book", "data-currency": VWAP_CURRENCY }, [
-        el("h3", {}, [BOOK_VWAP]),
-        el("p", {}, [vwapBlock || bookError || "Universe · VWAP 30D could not be totaled in " + VWAP_CURRENCY + " without using another currency."]),
+      grid.append(el("section", { id: "book-vwap", class: "book", "data-currency": exchangeCurrency(cx) }, [
+        el("h3", {}, [vwapLabel]),
+        el("p", {}, [vwapBlock || bookError || vwapLabel + " could not be totaled in " + exchangeCurrency(cx) + " without using another currency."]),
       ]));
     }
     grid.append(bookCard(last, {
@@ -3086,14 +3402,14 @@
       dailyProfit: "last-daily-profit",
       plannerNet: "last-planner-net",
       payback: "last-payback",
-    }, lastLabel, "The Price field on the public FIO " + cx + " book, in " + (last.currency || "CIS") + "."));
+    }, lastLabel, "The Price field on the public FIO " + cx + " book, in " + lastCode + "."));
     rootNode.append(grid);
     rootNode.append(el("p", { class: "hint" }, ["Total cost is the build and the permit once, plus supplies and degradation for every week. Total goods value is the owed output. Daily cost is supplies plus degradation. Payback is that one-time build and permit divided by daily profit, the same shape as PRUNplanner’s ROI. The planner’s own revenue and cost are the net export: rations the base both makes and eats are left out of both. Here those rations sit in the goods and again in the supplies, so profit and payback are the ROI comparison, and goods and cost are each higher by those rations."]));
     const standIns = (priceRows || []).filter(function (row) { return row.lastStandIn; });
     const fallen = (priceRows || []).filter(function (row) { return row.fallback; });
     if (bookError || vwapBlock || fallen.length || standIns.length) {
       const lines = [];
-      if (bookError) lines.push("The Universe · VWAP 30D list did not load. " + bookError);
+      if (bookError) lines.push("The " + vwapLabel + " list did not load. " + bookError);
       if (vwapBlock) lines.push(vwapBlock);
       standIns.forEach(function (row) { lines.push(row.lastStandIn); });
       fallen.forEach(function (row) { lines.push(row.ticker + ": " + row.fallback); });
@@ -3102,7 +3418,7 @@
       })));
     }
     rootNode.append(el("h2", {}, ["Prices"]));
-    rootNode.append(el("p", { class: "hint" }, ["Every material in the build, the supplies, and the goods. " + lastLabel + " is in " + (last.currency || "CIS") + ". Universe · VWAP 30D is in " + VWAP_CURRENCY + ". Those two prices are not added together."]));
+    rootNode.append(el("p", { class: "hint" }, ["Every material in the build, the supplies, and the goods. " + lastLabel + " is in " + lastCode + ". " + vwapLabel + " is in " + vwapCode + ". Those two prices are not added together."]));
     if (priceRows && priceRows.length) rootNode.append(renderPriceTable(priceRows, cx));
   }
 
@@ -3112,6 +3428,9 @@
     const priceRows = bundle && bundle.rows ? bundle.rows : [];
     const exchange = normalizeExchange(bundle && bundle.exchange);
     const lastLabel = lastTradeLabel(exchange);
+    const vwapLabel = vwapColumnLabel(exchange);
+    const vwapCode = (average && average.currency) || exchangeCurrency(exchange);
+    const lastCode = (result && result.currency) || exchangeCurrency(exchange);
     const byTicker = {};
     priceRows.forEach(function (row) { byTicker[row.ticker] = row; });
     const rootNode = el("div", { class: "card", id: "result-block" });
@@ -3128,7 +3447,7 @@
     });
     if (result.pace === "zero") {
       rootNode.append(el("div", { class: "callout warn" }, [
-        el("p", {}, ["A week of the owed goods is worth 0 " + (result.currency || "CIS") + ". The table still lists the weeks you asked for."]),
+        el("p", {}, ["A week of the owed goods is worth 0 " + lastCode + ". The table still lists the weeks you asked for."]),
       ]));
     }
     rootNode.append(el("p", {}, [weeksLabel(result.weeks)]));
@@ -3137,9 +3456,9 @@
     });
     appendBooks(rootNode, result, average, priceRows, bundle.bookError || "", exchange, bundle.vwapBlock || "");
     rootNode.append(el("p", {}, [varies(bookOutcome(result, lastLabel))]));
-    if (average) rootNode.append(el("p", {}, [varies(bookOutcome(average, BOOK_VWAP))]));
+    if (average) rootNode.append(el("p", {}, [varies(bookOutcome(average, vwapLabel))]));
     rootNode.append(el("h2", {}, ["Week by week, " + lastLabel]));
-    rootNode.append(el("p", {}, ["The week table is the " + lastLabel + " only, in " + (result.currency || "CIS") + ". Each cell is one number: units, supply cost, build cost, cumulative goods, cumulative cost, and cumulative profit. Week 1 pays the build and the permit once. Later weeks pay supplies and degradation only. Universe · VWAP 30D stays on the totals above, in " + VWAP_CURRENCY + ", and is not added into this table."]));
+    rootNode.append(el("p", {}, ["The week table is the " + lastLabel + " only, in " + lastCode + ". Each cell is one number: units, supply cost, build cost, cumulative goods, cumulative cost, and cumulative profit. Week 1 pays the build and the permit once. Later weeks pay supplies and degradation only. " + vwapLabel + " stays on the totals above, in " + vwapCode + ", and is not added into this table."]));
     rootNode.append(renderSchedule(result.schedule, result.profitWeek, exchange, result.currency));
     let tableHint = "The table lists the weeks you asked for, up to 52. Supply cost is recipe inputs, workforce consumables, and building degradation, paid every week. Build cost is the buildings and the permit, paid in week 1 only. Cumulative goods, cumulative cost, and cumulative profit are running totals at the " + lastLabel + ".";
     if (result.otherCis > 0) tableHint += " Week 1 build cost also includes other CIS.";
@@ -3147,21 +3466,24 @@
       tableHint += " A highlighted cell is the first week cumulative profit is zero or above.";
     }
     rootNode.append(el("p", { class: "hint" }, [tableHint]));
-    rootNode.append(el("p", {}, ["The lines below are the " + lastLabel + ". " + BOOK_VWAP + " totals are in the card above."]));
+    rootNode.append(el("p", {}, ["The lines below are the " + lastLabel + ". " + vwapLabel + " totals are in the card above."]));
     appendBank(rootNode, result, true);
     result.units.forEach(function (item) {
       const when = formatWhen(item.timeMs);
       const sourceText = item.sources && item.sources.length ? item.sources.join(". ") + ". " : "";
       const priceRow = byTicker[item.ticker];
+      const lineCode = priceRow && priceRow.crossFallback
+        ? (priceRow.lastCurrency || lastCode)
+        : lastCode;
       const vwapSentence = priceRow && priceRow.vwap != null
-        ? " Universe · VWAP 30D is " + formatMoney(priceRow.vwap, priceRow.vwapCurrency || VWAP_CURRENCY) + "."
+        ? " " + vwapSeriesName(priceRow, exchange) + " is " + formatMoney(priceRow.vwap, priceRow.vwapCurrency || vwapCode) + "."
         : priceRow && priceRow.fallback ? " " + priceRow.fallback : "";
       rootNode.append(el("p", {}, [el("strong", { class: "varies" }, [
         sourceText + "The recipe rate, before COGC, experts, and workforce efficiency, is " + formatQty(item.recipeWeeklyOutput) + " " + item.ticker + " a week. The owed share is " + formatQty(item.percent) + "% of the running output. Week 1 is " + formatQty(item.week1Owed) + " " + item.ticker + ". The last week is " + formatQty(item.endOwed) + " " + item.ticker + ". " + lastLabel + " ",
-        priceAnchor(item.ticker, cashOf(result, item.price), (priceRow && priceRow.lastExchange) || exchange),
+        priceAnchor(item.ticker, formatMoney(item.price, lineCode), (priceRow && priceRow.lastExchange) || exchange),
         when ? " at " + when + "." : ".",
         vwapSentence,
-        " " + formatQty(item.units) + " " + item.ticker + " over the term × " + cashOf(result, item.price) + " = " + cashOf(result, item.value) + " at the last trade.",
+        " " + formatQty(item.units) + " " + item.ticker + " over the term × " + formatMoney(item.price, lineCode) + " = " + formatMoney(item.value, lineCode) + " at the last trade.",
       ])]));
     });
 
@@ -3253,7 +3575,34 @@
     } else if (result.experts && (Math.abs(result.experts.factorStart - 1) > 1e-9 || Math.abs(result.experts.factorEnd - 1) > 1e-9)) {
       rootNode.append(el("p", {}, ["Those sentences are the FIO recipe rate. Pioneer lines stay at the handbook amount."]));
     }
-    if (result.weekly.length) {
+    if (result.schedule && result.schedule.length) {
+      const summed = {};
+      const order = [];
+      result.schedule.forEach(function (weekRow) {
+        (weekRow.supplyLines || []).forEach(function (line) {
+          if (!(line.amount > 0)) return;
+          const key = (line.kind || "input") + "\n" + line.ticker;
+          if (!summed[key]) {
+            summed[key] = {
+              ticker: line.ticker,
+              amount: 0,
+              price: line.price,
+              cost: 0,
+              kind: line.kind || "input",
+              materialName: line.kind === "workforce" || line.kind === "pioneer" ? "Workforce" : "Recipe input",
+            };
+            order.push(key);
+          }
+          summed[key].amount += line.amount;
+          summed[key].cost += line.cost;
+        });
+      });
+      const termLines = order.map(function (key) { return summed[key]; });
+      if (termLines.length) rootNode.append(materialTable(termLines, false, byTicker, exchange, result.currency, true));
+      let purchaseCost = 0;
+      termLines.forEach(function (line) { purchaseCost += line.cost; });
+      rootNode.append(el("p", { id: "term-purchases" }, [varies("Purchases over the term " + cashOf(result, purchaseCost) + ".")]));
+    } else if (result.weekly.length) {
       const weeklyLines = result.weekly.map(function (line) {
         const kind = line.kind === "pioneer" || line.kind === "workforce" ? "Workforce" : "Recipe input";
         const scaled = result.supplyScale == null ? line : scaleRecipeLine(line, result.supplyScale);
@@ -3261,13 +3610,9 @@
       });
       rootNode.append(materialTable(weeklyLines, false, byTicker, exchange, result.currency, true));
     }
-    const supplyTableNote = result.flowBasis === "plan"
-      ? "The amounts above are the plan's own production: the experts, COGC, workforce, and fertility on that plan."
-      : result.supplyScale == null
-        ? "The amounts above are the recipe rate."
-        : "The amounts above are the rate used for every week of this term.";
+    const supplyTableNote = "The amounts above add each week's purchase. A material the base also makes is bought only in the weeks the recipes use more than that week produces, and that gap is in the purchase total. The amount is not the gross output times the number of weeks.";
     const supplyParts = supplyWeekParts(result);
-    supplyParts.push(" " + supplyTableNote + " The cost column is the " + lastLabel + " in " + (result.currency || "CIS") + ". Universe · VWAP 30D is the other price, in " + VWAP_CURRENCY + ". The buildings and the permit are not in this table.");
+    supplyParts.push(" " + supplyTableNote + " The cost column is the " + lastLabel + " in " + lastCode + ". " + vwapLabel + " is the other price, in " + vwapCode + ". The buildings and the permit are not in this table.");
     rootNode.append(el("p", {}, supplyParts));
 
     if (notes.length) {
@@ -3821,7 +4166,7 @@
       if (prepared.error) throw new Error(prepared.error);
 
       const cx = readExchange();
-      setStatus("Loading " + cx + " last trades and Universe · VWAP 30D…");
+      setStatus("Loading " + cx + " last trades and " + vwapColumnLabel(cx) + "…");
       const books = await fetchPriceBooks(prepared.bill.tickers, cx);
       const result = quote(prepared.bill, books.last, multiplier.multiplier, ramp, weeks.weeks);
       if (result.error) throw new Error(result.error);
@@ -3876,7 +4221,7 @@
       }, extraNotes));
       let done = "Counted from the " + cx + " last trade";
       if (result.currency) done += " in " + result.currency;
-      done += " and from Universe · VWAP 30D in " + VWAP_CURRENCY + ".";
+      done += " and from " + vwapColumnLabel(cx) + " in " + ((average && average.currency) || exchangeCurrency(cx)) + ".";
       if (appliedExperts.count > 0) done += " Experts in use are " + appliedExperts.count + ": " + describeExperts(appliedExperts.byType) + ".";
       if (multiplier.capped) done += " Profit multiplier is " + formatQty(multiplier.multiplier) + ".";
       setStatus(done);

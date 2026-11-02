@@ -2632,6 +2632,16 @@
     return rounded.toLocaleString("en-US", { maximumFractionDigits: 4 });
   }
 
+  function formatTableQty(value) {
+    if (!Number.isFinite(value)) return "";
+    const rounded = Math.round(value * 100) / 100;
+    return rounded.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function moneyCode(currency) {
+    return String(currency || VWAP_CURRENCY).trim().toUpperCase() || VWAP_CURRENCY;
+  }
+
   function formatMoney(value, currency) {
     if (!Number.isFinite(value)) return "";
     const rounded = Math.round(value * 100) / 100;
@@ -2640,8 +2650,14 @@
       minimumFractionDigits: whole ? 0 : 2,
       maximumFractionDigits: 2,
     });
-    const code = String(currency || VWAP_CURRENCY).trim().toUpperCase() || VWAP_CURRENCY;
-    return digits + " " + code;
+    return digits + " " + moneyCode(currency);
+  }
+
+  function formatTableMoney(value, currency) {
+    if (!Number.isFinite(value)) return "";
+    const rounded = Math.round(value * 100) / 100;
+    const digits = rounded.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return digits + " " + moneyCode(currency);
   }
 
   function formatCis(value) {
@@ -2660,7 +2676,7 @@
   }
 
   function cumulativeProfitText(row, currency) {
-    const amount = formatMoney(row.cumulativeProfit, currency);
+    const amount = formatTableMoney(row.cumulativeProfit, currency);
     const percent = profitPercentText(row.cumulativeProfit, row.cumulativeCost);
     return percent ? amount + " (" + percent + ")" : amount;
   }
@@ -2735,11 +2751,11 @@
     if (!row) return "—";
     const code = row.vwapCurrency || VWAP_CURRENCY;
     if (row.fallback && !(row.vwap > 0)) {
-      if (row.used > 0) return formatMoney(row.used, row.usedCurrency || code) + " · last trade";
+      if (row.used > 0) return formatTableMoney(row.used, row.usedCurrency || code) + " · last trade";
       return "—";
     }
     if (!(row.vwap > 0)) return "—";
-    return formatMoney(row.vwap, code);
+    return formatTableMoney(row.vwap, code);
   }
 
   function tradeRowCurrency(priceRow, bookCurrency) {
@@ -2765,21 +2781,21 @@
       const rowCode = useSourceCurrency ? tradeRowCurrency(priced, code) : code;
       const trade = line.leftOut
         ? "—"
-        : priceAnchor(line.ticker, formatMoney(line.price, rowCode), (priced && priced.lastExchange) || exchange);
-      const costText = line.leftOut ? "—" : formatMoney(line.cost, rowCode);
+        : priceAnchor(line.ticker, formatTableMoney(line.price, rowCode), (priced && priced.lastExchange) || exchange);
+      const costText = line.leftOut ? "—" : formatTableMoney(line.cost, rowCode);
       const average = vwapCell(pricesByTicker ? pricesByTicker[line.ticker] : null);
       const cells = withUnit
         ? [
           line.ticker + (line.materialName ? " · " + line.materialName : ""),
-          formatQty(line.unitAmount),
-          formatQty(line.amount),
+          formatTableQty(line.unitAmount),
+          formatTableQty(line.amount),
           trade,
           average,
           costText,
         ]
         : [
           line.ticker + (line.materialName ? " · " + line.materialName : ""),
-          formatQty(line.amount),
+          formatTableQty(line.amount),
           trade,
           average,
           costText,
@@ -2873,21 +2889,29 @@
     return text || "0";
   }
 
+  function tableAmountList(lines) {
+    return (lines || []).filter(function (item) {
+      return item && item.amount > 0 && item.ticker && Math.round(item.amount * 100) / 100 > 0;
+    }).map(function (item) {
+      return formatTableQty(item.amount) + " " + item.ticker;
+    }).join(", ");
+  }
+
+  function producedLines(row) {
+    const produced = {};
+    const order = [];
+    ((row && row.outputUnits) || []).forEach(function (item) {
+      if (!item || !item.ticker || !(item.amount > 0)) return;
+      if (!Object.prototype.hasOwnProperty.call(produced, item.ticker)) order.push(item.ticker);
+      produced[item.ticker] = (produced[item.ticker] || 0) + item.amount;
+    });
+    return order.map(function (ticker) {
+      return { ticker: ticker, amount: produced[ticker] };
+    });
+  }
+
   function unitsCellText(row) {
-    const outputLines = (row && (row.outputUnits || row.received)) || [];
-    const seen = {};
-    outputLines.forEach(function (item) {
-      if (item && item.ticker && item.amount > 0) seen[item.ticker] = true;
-    });
-    const outputs = amountList(outputLines);
-    const inputSource = row && row.inputUnits ? row.inputUnits : (row && row.supplyLines || []).filter(function (line) {
-      return line.kind === "input";
-    });
-    const inputs = amountList((inputSource || []).filter(function (item) {
-      return item && item.ticker && !seen[item.ticker];
-    }));
-    if (outputs && inputs) return outputs + " · " + inputs;
-    return outputs || inputs || "0";
+    return tableAmountList(producedLines(row)) || "0";
   }
 
   function renderSchedule(schedule, profitWeek, exchange, currency) {
@@ -2906,10 +2930,10 @@
       body.append(el("tr", { "data-week": String(row.week), "data-expert-bonus": row.expertBonus ? "yes" : "no" }, [
         el("td", {}, [String(row.week)]),
         el("td", { "data-field": "units" }, [unitsCellText(row)]),
-        el("td", { class: "num", "data-field": "supply" }, [formatMoney(row.supplyCost, code)]),
-        el("td", { class: "num", "data-field": "build" }, [formatMoney(row.buildCost, code)]),
-        el("td", { class: "num", "data-field": "cumulative-goods" }, [formatMoney(row.cumulativeGoods, code)]),
-        el("td", { class: "num", "data-field": "cumulative-cost" }, [formatMoney(row.cumulativeCost, code)]),
+        el("td", { class: "num", "data-field": "supply" }, [formatTableMoney(row.supplyCost, code)]),
+        el("td", { class: "num", "data-field": "build" }, [formatTableMoney(row.buildCost, code)]),
+        el("td", { class: "num", "data-field": "cumulative-goods" }, [formatTableMoney(row.cumulativeGoods, code)]),
+        el("td", { class: "num", "data-field": "cumulative-cost" }, [formatTableMoney(row.cumulativeCost, code)]),
         el("td", { class: profitClasses.join(" "), "data-field": "cumulative" }, [cumulativeProfitText(row, code)]),
       ]));
     });
@@ -3008,7 +3032,7 @@
     rows.forEach(function (row) {
       const cells = [
         row.ticker + (row.materialName ? " · " + row.materialName : ""),
-        priceAnchor(row.ticker, formatMoney(row.last, row.lastCurrency || "CIS"), row.lastExchange || exchange),
+        priceAnchor(row.ticker, formatTableMoney(row.last, row.lastCurrency || "CIS"), row.lastExchange || exchange),
         vwapCell(row),
       ];
       body.append(el("tr", {}, cells.map(function (cell, index) {

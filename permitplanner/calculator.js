@@ -3712,7 +3712,7 @@
       const usedText = areaFigure(used);
       if (!planetId) {
         node.classList.remove("over");
-        node.textContent = "Area " + usedText + ", limit unknown";
+        node.textContent = "Area " + usedText + ", Limit 0";
         return;
       }
       const limit = baseAreaLimit(areaPermits);

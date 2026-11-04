@@ -2821,6 +2821,7 @@
   let buildingCatalog = null;
   let buildingCatalogPromise = null;
   let buildingMenu = null;
+  let afterBuildingsLoaded = null;
 
   const BUILDING_GROUP_ORDER = [
     "Production buildings",
@@ -2925,6 +2926,15 @@
         for (const building of list) map.set(String(building.Ticker || "").toUpperCase(), building);
         buildingMenu = menuFromBuildings(list);
         buildingCatalog = map;
+        const notify = afterBuildingsLoaded;
+        if (typeof notify === "function") {
+          try { notify(); } catch (error) { /* the list is already stored */ }
+          if (typeof setTimeout === "function") {
+            setTimeout(function () {
+              try { notify(); } catch (error) { /* the list is already stored */ }
+            }, 0);
+          }
+        }
         return map;
       }).catch(function (error) {
         buildingCatalogPromise = null;
@@ -3708,15 +3718,15 @@
       const node = doc.getElementById("area-line");
       if (!node) return;
       const used = usedBuildingArea(readRows(), buildingCatalog);
-      const planetId = String(doc.getElementById("planet-id").value || "").trim();
-      const usedText = areaFigure(used);
+      const planetNode = doc.getElementById("planet-id");
+      const planetId = String(planetNode && planetNode.value || "").trim();
       if (!planetId) {
         node.classList.remove("over");
-        node.textContent = "Area " + usedText + ", Limit 0";
+        node.textContent = "Area " + areaFigure(used) + "/limit";
         return;
       }
       const limit = baseAreaLimit(areaPermits);
-      node.textContent = "Area " + usedText + "/" + areaFigure(limit);
+      node.textContent = "Area " + areaFigure(used) + "/" + areaFigure(limit);
       node.classList.toggle("over", used > limit);
     }
 
@@ -3939,6 +3949,8 @@
       const ticker = el("select", { class: "ticker", "aria-label": "Building" });
       fillBuildingSelect(ticker, state.ticker || "");
       const count = el("input", { class: "count", type: "number", min: "0", step: "1", inputmode: "numeric", "aria-label": "How many buildings", value: state.count == null ? "" : String(state.count) });
+      count.addEventListener("input", paintArea);
+      count.addEventListener("change", paintArea);
       const remove = el("button", { type: "button", class: "secondary" }, ["Remove"]);
       grid.append(ticker, count, remove);
       row.append(grid);
@@ -3957,10 +3969,14 @@
         syncOwedMaterials([], produced);
       });
       ticker.addEventListener("change", function () {
-        const produced = collectRowOutputs(row);
-        Array.from(row.querySelectorAll(".recipe-line")).forEach(function (line) { line.remove(); });
-        placeAddOrderButton(row, buildingFromRow(row));
-        syncOwedMaterials([], produced);
+        try {
+          const produced = collectRowOutputs(row);
+          Array.from(row.querySelectorAll(".recipe-line")).forEach(function (line) { line.remove(); });
+          placeAddOrderButton(row, buildingFromRow(row));
+          syncOwedMaterials([], produced);
+        } finally {
+          paintArea();
+        }
       });
       return row;
     }
@@ -4351,6 +4367,10 @@
       if (target && target.closest && target.closest("button")) paintArea();
     });
     doc.getElementById("planet-id").addEventListener("input", paintArea);
+    afterBuildingsLoaded = function () {
+      refreshBuildingSelects();
+      paintArea();
+    };
     loadBuildings().then(function () {
       refreshBuildingSelects();
       paintArea();
@@ -4376,9 +4396,14 @@
     doc.getElementById("add-building").addEventListener("click", function () {
       rowsHost.append(createRow({}));
       if (!buildingMenu) {
-        loadBuildings().then(refreshBuildingSelects).catch(function () {
+        loadBuildings().then(function () {
+          refreshBuildingSelects();
+          paintArea();
+        }).catch(function () {
           setStatus("The FIO building list did not load.");
         });
+      } else {
+        paintArea();
       }
     });
     doc.getElementById("plan-link").addEventListener("keydown", function (event) {

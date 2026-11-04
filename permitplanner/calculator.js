@@ -388,20 +388,41 @@
     CHEMISTRY: "Chemistry",
     CONSTRUCTION: "Construction",
     ELECTRONICS: "Electronics",
-    FOOD_INDUSTRIES: "Food industries",
-    FUEL_REFINING: "Fuel refining",
+    FOOD_INDUSTRIES: "Food Industries",
+    FUEL_REFINING: "Fuel Refining",
     MANUFACTURING: "Manufacturing",
     METALLURGY: "Metallurgy",
-    RESOURCE_EXTRACTION: "Resource extraction",
+    RESOURCE_EXTRACTION: "Resource Extraction",
+  };
+
+  const WORKFORCE_COGC_NAME = {
+    PIONEERS: "Pioneers",
+    SETTLERS: "Settlers",
+    TECHNICIANS: "Technicians",
+    ENGINEERS: "Engineers",
+    SCIENTISTS: "Scientists",
   };
 
   function cogcName(cogc) {
-    const program = String(cogc || "").trim().toUpperCase();
-    if (!program || program === "---") return "";
+    const program = cogcProgram(cogc);
+    if (!program) return "";
     if (INDUSTRY_COGC[program]) return INDUSTRY_COGC[program];
-    const tier = WORKFORCE_COGC[program];
-    if (tier) return tier.charAt(0).toUpperCase() + tier.slice(1);
+    if (WORKFORCE_COGC_NAME[program]) return WORKFORCE_COGC_NAME[program];
     return program.replace(/_/g, " ");
+  }
+
+  function cogcProgram(value) {
+    const raw = String(value || "").trim();
+    if (!raw || raw === "---" || raw === "-" || raw.toUpperCase() === "NONE") return "";
+    const upper = raw.toUpperCase().replace(/[\s-]+/g, "_");
+    if (!upper || upper === "_" || upper === "NONE") return "";
+    if (INDUSTRY_COGC[upper] || WORKFORCE_COGC[upper]) return upper;
+    const workforce = Object.keys(WORKFORCE_COGC);
+    for (let i = 0; i < workforce.length; i += 1) {
+      const tier = WORKFORCE_COGC[workforce[i]].toUpperCase();
+      if (upper === tier || upper === tier + "S") return workforce[i];
+    }
+    return upper;
   }
 
   function cogcMultiplier(building, cogc) {
@@ -3636,6 +3657,7 @@
     const status = doc.getElementById("status");
     const results = doc.getElementById("results");
     let busy = false;
+    let counted = false;
     let planContext = null;
     let scrollLock = null;
     let planetResourceCache = null;
@@ -3710,6 +3732,32 @@
       if (!note) return;
       const name = cogcName(cogc);
       note.textContent = name ? "Planet COGC is " + name + "." : "This plan has no planet COGC.";
+    }
+
+    function readCogc() {
+      const select = doc.getElementById("cogc");
+      if (!select) return "";
+      return cogcProgram(select.value);
+    }
+
+    function setCogcSelect(value) {
+      const select = doc.getElementById("cogc");
+      if (!select) return "";
+      const program = cogcProgram(value);
+      if (!program) {
+        select.value = "";
+        return "";
+      }
+      let found = false;
+      for (let i = 0; i < select.options.length; i += 1) {
+        if (select.options[i].value === program) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) select.append(el("option", { value: program }, [cogcName(program) || program]));
+      select.value = program;
+      return program;
     }
 
     function showError(message) {
@@ -4015,6 +4063,7 @@
       if (planetChecked.error) throw new Error(planetChecked.error);
       const planetId = planetChecked.id;
       doc.getElementById("planet-id").value = planetId;
+      setCogcSelect(details.plan_cogc || "");
       areaPermits = details.plan_permits_used;
       paintArea();
       const expertPlan = planExpertCount(planData);
@@ -4040,7 +4089,7 @@
           fromPlan: true,
           planet: planet,
           planetResources: planetResources,
-          cogc: details.plan_cogc || "",
+          cogc: readCogc(),
           habitations: habitations,
           workforceLux: planWorkforceLux(planData),
           expertEndByType: cappedExperts.byType,
@@ -4052,11 +4101,12 @@
         ? outputs.map(function (ticker) { return ticker + " 100"; }).join("\n")
         : "";
       results.replaceChildren();
+      counted = false;
       planContext = {
         name: details.plan_name || parsed.id,
         planetId: planetId,
         permits: details.plan_permits_used,
-        cogc: details.plan_cogc || "",
+        cogc: readCogc(),
         experts: expertPlan.parts.map(function (expert) { return expert.amount + " " + expert.type; }),
         expertCount: cappedExperts.count,
         expertsByType: expertPlan.byType,
@@ -4075,13 +4125,13 @@
       if (details.plan_permits_used != null) {
         bits.push("The plan records " + details.plan_permits_used + " permit slot. That count is not a price. The permit cost is the HQ level.");
       }
-      const loadedCogc = cogcName(details.plan_cogc);
+      const loadedCogc = cogcName(readCogc());
       if (loadedCogc) {
         bits.push("Planet COGC is " + loadedCogc + ".");
       } else {
         bits.push("This plan has no planet COGC.");
       }
-      paintCogcNote(details.plan_cogc);
+      paintCogcNote(readCogc());
       bits.push.apply(bits, built.hints);
       bits.push.apply(bits, built.skipped);
       setStatus(bits.join(" "));
@@ -4154,7 +4204,7 @@
         fromPlan: !!planContext,
         planet: planet,
         planetResources: planetResources,
-        cogc: planContext ? planContext.cogc : "",
+        cogc: readCogc(),
         habitations: habitations,
         workforceLux: planContext ? planContext.workforceLux : null,
       };
@@ -4225,6 +4275,7 @@
       if (appliedExperts.count > 0) done += " Experts in use are " + appliedExperts.count + ": " + describeExperts(appliedExperts.byType) + ".";
       if (multiplier.capped) done += " Profit multiplier is " + formatQty(multiplier.multiplier) + ".";
       setStatus(done);
+      counted = true;
       if (scrollLock) applyScrollLock();
       else results.scrollIntoView({ behavior: "smooth", block: "start" });
     }
@@ -4234,7 +4285,9 @@
       busy = true;
       captureScrollLock();
       const buttons = Array.from(doc.querySelectorAll("button"));
+      const cogcSelect = doc.getElementById("cogc");
       buttons.forEach(function (button) { button.disabled = true; });
+      if (cogcSelect) cogcSelect.disabled = true;
       applyScrollLock();
       try {
         await fn();
@@ -4244,6 +4297,7 @@
       } finally {
         busy = false;
         buttons.forEach(function (button) { button.disabled = false; });
+        if (cogcSelect) cogcSelect.disabled = false;
         applyScrollLock();
         const view = doc.defaultView;
         if (view && scrollLock) {
@@ -4308,6 +4362,12 @@
       if (node) node.addEventListener("input", function () { clampCaps(true); });
     });
     doc.getElementById("exchange").addEventListener("change", readExchange);
+    doc.getElementById("cogc").addEventListener("change", function () {
+      const cogc = readCogc();
+      if (planContext) planContext.cogc = cogc;
+      paintCogcNote(cogc);
+      if (counted) withBusy(onCalculate);
+    });
     doc.getElementById("calculate").addEventListener("click", function () { clampCaps(false); }, true);
     form.addEventListener("keydown", function (event) {
       if (event.key === "Enter") clampCaps(false);
